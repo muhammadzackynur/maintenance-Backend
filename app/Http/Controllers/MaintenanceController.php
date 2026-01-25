@@ -42,4 +42,16 @@ class MaintenanceController extends Controller
             'data' => $report
         ], 201); //
     }
+
+    public function index()
+    {
+        // Ambil data diurutkan dari yang terbaru (descending)
+        $reports = MaintenanceReport::orderBy('created_at', 'desc')->get();
+
+        return response()->json([
+            'success' => true,
+            'message' => 'List Laporan',
+            'data' => $reports
+        ], 200);
+    }
 }
