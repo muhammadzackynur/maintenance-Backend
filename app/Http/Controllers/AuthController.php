@@ -22,4 +22,15 @@ class AuthController extends Controller {
             'message' => 'ID atau Role tidak cocok'
         ], 401);
     }
+
+
+    public function update(Request $request, $id) {
+        $user = User::find($id);
+        if (!$user) {
+            return response()->json(['success' => false, 'message' => 'User not found'], 404);
+        }
+        $user->name = $request->name;
+        $user->save();
+        return response()->json(['success' => true, 'message' => 'Updated', 'user' => $user], 200);
+    }
 }
