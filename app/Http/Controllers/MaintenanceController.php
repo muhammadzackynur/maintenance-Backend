@@ -3,51 +3,37 @@
 namespace App\Http\Controllers;
 
 use Illuminate\Http\Request;
-use App\Models\MaintenanceReport; //
-use Illuminate\Support\Facades\Storage;
+use App\Models\MaintenanceReport;
 
 class MaintenanceController extends Controller
 {
     public function store(Request $request)
     {
-        // Validasi mencakup latitude dan longitude
+        // Validasi input (Tanpa Foto)
         $validated = $request->validate([
             'user_id' => 'required',
-            'lokasi_pekerjaan' => 'required',
-            'latitude' => 'nullable',
-            'longitude' => 'nullable',
-            'jenis_maintenance' => 'required',
-            'time_plan' => 'required|date',
-            'deskripsi_masalah' => 'nullable',
+            'area' => 'required',
+            'district' => 'required',
+            'witel' => 'required',
+            'sto' => 'required',
+            'mitra_pelaksana' => 'required',
+            'kategori_kegiatan' => 'required',
+            'uraian_pekerjaan' => 'required',
             'teknisi' => 'required',
-            'foto_before' => 'required|image|mimes:jpeg,png,jpg',
-            'foto_progress' => 'required|image|mimes:jpeg,png,jpg',
-            'foto_after' => 'required|image|mimes:jpeg,png,jpg',
         ]);
 
-        // Proses Simpan Gambar ke storage/app/public/reports
-        $pathBefore = $request->file('foto_before')->store('reports', 'public');
-        $pathProgress = $request->file('foto_progress')->store('reports', 'public');
-        $pathAfter = $request->file('foto_after')->store('reports', 'public');
-
-        // Simpan ke Database
-        $report = MaintenanceReport::create(array_merge($validated, [
-            'foto_before' => $pathBefore,
-            'foto_progress' => $pathProgress,
-            'foto_after' => $pathAfter,
-        ]));
+        // Simpan ke database tanpa proses upload gambar
+        $report = MaintenanceReport::create($validated);
 
         return response()->json([
             'message' => 'Laporan berhasil disimpan',
             'data' => $report
-        ], 201); //
+        ], 201);
     }
 
     public function index()
     {
-        // Ambil data diurutkan dari yang terbaru (descending)
         $reports = MaintenanceReport::orderBy('created_at', 'desc')->get();
-
         return response()->json([
             'success' => true,
             'message' => 'List Laporan',

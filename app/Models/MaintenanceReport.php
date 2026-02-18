@@ -7,8 +7,14 @@ use Illuminate\Database\Eloquent\Model;
 class MaintenanceReport extends Model
 {
     protected $fillable = [
-        'user_id', 'lokasi_pekerjaan', 'latitude', 'longitude', 
-        'jenis_maintenance', 'time_plan', 'deskripsi_masalah', 
-        'teknisi', 'foto_before', 'foto_progress', 'foto_after'
+        'user_id', 
+        'area', 
+        'district', 
+        'witel', 
+        'sto', 
+        'mitra_pelaksana',
+        'kategori_kegiatan',
+        'uraian_pekerjaan', 
+        'teknisi'
     ];
 }
