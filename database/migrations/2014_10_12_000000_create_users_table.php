@@ -6,26 +6,17 @@ use Illuminate\Support\Facades\Schema;
 
 return new class extends Migration
 {
-    /**
-     * Run the migrations.
-     *
-     * @return void
-     */
     public function up(): void {
-    Schema::create('users', function (Blueprint $table) {
-        $table->id();
-        $table->string('user_id')->unique(); // ID unik untuk login (contoh: TLP001)
-        $table->string('name');
-        $table->enum('role', ['Tim Lapangan', 'Tim Administrasi']);
-        $table->timestamps();
-    });
+        Schema::create('users', function (Blueprint $table) {
+            $table->id();
+            $table->string('user_id')->unique(); 
+            $table->string('name');
+            $table->enum('role', ['Tim Lapangan', 'Tim Administrasi']);
+            $table->longText('biometric_hash')->nullable(); // Kolom Sidik Jari Aplikasi
+            $table->timestamps();
+        });
     }
 
-    /**
-     * Reverse the migrations.
-     *
-     * @return void
-     */
     public function down()
     {
         Schema::dropIfExists('users');
