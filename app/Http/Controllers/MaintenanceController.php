@@ -9,26 +9,44 @@ class MaintenanceController extends Controller
 {
     public function store(Request $request)
     {
-        // Validasi input (Tanpa Foto)
-        $validated = $request->validate([
-            'user_id' => 'required',
-            'area' => 'required',
-            'district' => 'required',
-            'witel' => 'required',
-            'sto' => 'required',
-            'mitra_pelaksana' => 'required',
-            'kategori_kegiatan' => 'required',
-            'uraian_pekerjaan' => 'required',
-            'teknisi' => 'required',
-        ]);
+        try {
+            // Validasi input
+            $validated = $request->validate([
+                'user_id' => 'required',
+                'area' => 'required',
+                'district' => 'required',
+                'witel' => 'required',
+                'sto' => 'required',
+                'mitra_pelaksana' => 'required',
+                'kategori_kegiatan' => 'required',
+                'uraian_pekerjaan' => 'required',
+                'teknisi' => 'required',
+            ]);
 
-        // Simpan ke database tanpa proses upload gambar
-        $report = MaintenanceReport::create($validated);
+            // Simpan ke database
+            $report = MaintenanceReport::create($validated);
 
-        return response()->json([
-            'message' => 'Laporan berhasil disimpan',
-            'data' => $report
-        ], 201);
+            return response()->json([
+                'success' => true,
+                'message' => 'Laporan berhasil disimpan',
+                'data' => $report
+            ], 201);
+
+        } catch (\Illuminate\Validation\ValidationException $e) {
+            // Jika ada field yang kosong/tidak dikirim dari Flutter
+            return response()->json([
+                'success' => false, 
+                'message' => 'Ada data yang belum diisi!', 
+                'errors' => $e->errors()
+            ], 422);
+
+        } catch (\Exception $e) {
+            // Jika terjadi error di database MySQL atau Model
+            return response()->json([
+                'success' => false, 
+                'message' => 'Error Server: ' . $e->getMessage()
+            ], 500);
+        }
     }
 
     public function index()
