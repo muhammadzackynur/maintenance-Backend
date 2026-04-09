@@ -16,6 +16,7 @@ class MaintenanceReport extends Model
         'mitra_pelaksana', 
         'kategori_kegiatan', 
         'uraian_pekerjaan', 
-        'teknisi'
+        'teknisi',
+        'foto_before', 'foto_progress', 'foto_after'
     ];
 }
