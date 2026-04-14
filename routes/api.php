@@ -9,7 +9,7 @@ use App\Http\Controllers\MaintenanceController;
 
 
 
-
+Route::post('/maintenance/report/{id}/add-photos', [App\Http\Controllers\MaintenanceController::class, 'addPhotos']);
 // Pastikan nama Class-nya adalah MaintenanceController
 Route::put('/maintenance/reports/{id}/status', [MaintenanceController::class, 'updateStatus']);
 Route::post('/register-fingerprint', [AuthController::class, 'registerFingerprint']);

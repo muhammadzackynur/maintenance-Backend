@@ -17,6 +17,12 @@ class MaintenanceReport extends Model
         'kategori_kegiatan', 
         'uraian_pekerjaan', 
         'teknisi',
-        'foto_before', 'foto_progress', 'foto_after'
+        'foto_before', 'foto_progress', 'foto_after',
+        'latitude', 'longitude',
+        'status'
     ];
+
+    public function images() {
+    return $this->hasMany(ReportImage::class);
+}
 }

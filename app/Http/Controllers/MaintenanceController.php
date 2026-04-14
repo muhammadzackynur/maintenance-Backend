@@ -4,13 +4,15 @@ namespace App\Http\Controllers;
 
 use Illuminate\Http\Request;
 use App\Models\MaintenanceReport;
+use App\Models\ReportImage; 
+use Illuminate\Support\Facades\Storage;
 
 class MaintenanceController extends Controller
 {
     public function store(Request $request)
     {
         try {
-            // 1. Validasi data teks dan file foto yang masuk dari Flutter
+            // 1. Validasi data teks (Wajib) dan array foto (Opsional)
             $validated = $request->validate([
                 'user_id' => 'required',
                 'area' => 'required|string',
@@ -21,53 +23,63 @@ class MaintenanceController extends Controller
                 'kategori_kegiatan' => 'required|string',
                 'uraian_pekerjaan' => 'required|string',
                 'teknisi' => 'required|string',
-                // Validasi foto (opsional/nullable, harus berupa gambar, max 5MB)
-                'foto_before' => 'nullable|image|max:5120',   
-                'foto_progress' => 'nullable|image|max:5120',
-                'foto_after' => 'nullable|image|max:5120',
+                
+                // TAMBAHAN: Izinkan latitude dan longitude masuk
+                'latitude' => 'nullable|string', 
+                'longitude' => 'nullable|string',
+
+                // Validasi agar bisa menerima banyak file (array)
+                'foto_before.*' => 'nullable|image|max:5120',   
+                'foto_progress.*' => 'nullable|image|max:5120',
+                'foto_after.*' => 'nullable|image|max:5120',
             ]);
 
-            // 2. Proses menyimpan file foto ke folder storage/app/public/reports (jika ada fotonya)
-            if ($request->hasFile('foto_before')) {
-                $validated['foto_before'] = $request->file('foto_before')->store('reports', 'public');
-            }
-            if ($request->hasFile('foto_progress')) {
-                $validated['foto_progress'] = $request->file('foto_progress')->store('reports', 'public');
-            }
-            if ($request->hasFile('foto_after')) {
-                $validated['foto_after'] = $request->file('foto_after')->store('reports', 'public');
+            // 2. Simpan data teks utama ke tabel maintenance_reports
+            $report = MaintenanceReport::create($request->except(['foto_before', 'foto_progress', 'foto_after']));
+
+            // 3. Proses looping untuk menyimpan banyak foto ke tabel relasi (report_images)
+            $categories = ['foto_before', 'foto_progress', 'foto_after'];
+
+            foreach ($categories as $category) {
+                if ($request->hasFile($category)) {
+                    foreach ($request->file($category) as $file) {
+                        // Simpan file fisik
+                        $path = $file->store('reports', 'public');
+
+                        // Simpan path ke tabel terpisah agar bisa lebih dari 10 gambar
+                        ReportImage::create([
+                            'maintenance_report_id' => $report->id,
+                            'image_path' => $path,
+                            'type' => str_replace('foto_', '', $category) // hasil: before, progress, atau after
+                        ]);
+                    }
+                }
             }
 
-            // 3. Proses menyimpan semua data teks dan path foto ke tabel maintenance_reports
-            $report = MaintenanceReport::create($validated);
-
-            // 4. Memberikan respon sukses ke Flutter
             return response()->json([
                 'success' => true,
-                'message' => 'Laporan dan Foto berhasil dikirim!',
-                'data' => $report
+                'message' => 'Laporan dan semua foto berhasil dikirim!',
+                'data' => $report->load('images') // Load gambar agar langsung muncul hasilnya
             ], 201);
 
         } catch (\Illuminate\Validation\ValidationException $e) {
-            // Menangkap error jika ada kolom wajib yang kosong atau foto terlalu besar
             return response()->json([
                 'success' => false,
-                'message' => 'Validasi gagal, periksa kelengkapan data',
+                'message' => 'Validasi gagal',
                 'errors' => $e->errors()
             ], 422);
         } catch (\Exception $e) {
-            // Menangkap error server (misal database mati atau folder belum di-link)
             return response()->json([
                 'success' => false,
-                'message' => 'Gagal menyimpan data: ' . $e->getMessage()
+                'message' => 'Gagal: ' . $e->getMessage()
             ], 500);
         }
     }
 
     public function index()
     {
-        // Pastikan pakai orderBy agar data terbaru ada di paling atas
-        $reports = MaintenanceReport::orderBy('id', 'desc')->get();
+        // Gunakan with('images') agar daftar foto muncul di Dashboard Admin/Teknisi
+        $reports = MaintenanceReport::with('images')->orderBy('id', 'desc')->get();
         
         return response()->json([
             'status' => 'success',
@@ -78,67 +90,72 @@ class MaintenanceController extends Controller
     public function updateData(Request $request, $id)
     {
         $report = MaintenanceReport::find($id);
-
         if (!$report) {
-            return response()->json(['success' => false, 'message' => 'Data laporan tidak ditemukan'], 404);
+            return response()->json(['success' => false, 'message' => 'Data tidak ditemukan'], 404);
         }
 
-        // Ambil semua data teks yang dikirim
         $dataToUpdate = $request->except(['_method', 'evidence_material', 'evidence_ukur', 'evidence_pendukung']);
 
-        // --- PROSES UPLOAD FILE DENGAN MEMPERTAHANKAN NAMA ASLI ---
-        
-        if ($request->hasFile('evidence_material')) {
-            $file = $request->file('evidence_material');
-            // Format: MAINT-{ID}_Material_NamaAsli.zip
-            $filename = 'MAINT-' . $id . '_Material_' . $file->getClientOriginalName();
-            $path = $file->storeAs('evidences', $filename, 'public');
-            $dataToUpdate['evidence_material'] = $path;
-        }
-        
-        if ($request->hasFile('evidence_ukur')) {
-            $file = $request->file('evidence_ukur');
-            // Format: MAINT-{ID}_Ukur_NamaAsli.zip
-            $filename = 'MAINT-' . $id . '_Ukur_' . $file->getClientOriginalName();
-            $path = $file->storeAs('evidences', $filename, 'public');
-            $dataToUpdate['evidence_ukur'] = $path;
+        // Handle update file evidences (ZIP/RAR)
+        $files = ['evidence_material', 'evidence_ukur', 'evidence_pendukung'];
+        foreach ($files as $field) {
+            if ($request->hasFile($field)) {
+                $file = $request->file($field);
+                $filename = 'MAINT-' . $id . '_' . ucfirst(str_replace('evidence_', '', $field)) . '_' . $file->getClientOriginalName();
+                $path = $file->storeAs('evidences', $filename, 'public');
+                $dataToUpdate[$field] = $path;
+            }
         }
 
-        if ($request->hasFile('evidence_pendukung')) {
-            $file = $request->file('evidence_pendukung');
-            // Format: MAINT-{ID}_Pendukung_NamaAsli.zip
-            $filename = 'MAINT-' . $id . '_Pendukung_' . $file->getClientOriginalName();
-            $path = $file->storeAs('evidences', $filename, 'public');
-            $dataToUpdate['evidence_pendukung'] = $path;
-        }
-
-        // Simpan ke database
         $report->update($dataToUpdate);
-
-        return response()->json([
-            'success' => true,
-            'message' => 'Data dan Evidence berhasil diperbarui!',
-            'data' => $report
-        ], 200);
+        return response()->json(['success' => true, 'data' => $report], 200);
     }
 
     public function updateStatus(Request $request, $id)
     {
-        // 1. Cari data berdasarkan ID
         $report = MaintenanceReport::find($id);
+        if (!$report) return response()->json(['message' => 'Data tidak ditemukan'], 404);
 
-        if (!$report) {
-            return response()->json(['message' => 'Data tidak ditemukan'], 404);
-        }
-
-        // 2. Update kolom status
         $report->status = $request->status;
         $report->save();
 
-        // 3. Kembalikan respon sukses
+        return response()->json(['message' => 'Status diperbarui', 'data' => $report], 200);
+    }
+
+    public function addPhotos(Request $request, $id)
+    {
+        $report = MaintenanceReport::find($id);
+
+        if (!$report) {
+            return response()->json(['success' => false, 'message' => 'Data tidak ditemukan'], 404);
+        }
+
+        $categories = ['foto_before', 'foto_progress', 'foto_after'];
+        $uploadedCount = 0;
+
+        foreach ($categories as $category) {
+            if ($request->hasFile($category)) {
+                foreach ($request->file($category) as $file) {
+                    $path = $file->store('reports', 'public');
+                    ReportImage::create([
+                        'maintenance_report_id' => $report->id,
+                        'image_path' => $path,
+                        // Menghapus kata 'foto_' untuk mendapatkan tipe aslinya
+                        'type' => str_replace('foto_', '', $category) 
+                    ]);
+                    $uploadedCount++;
+                }
+            }
+        }
+
+        if ($uploadedCount == 0) {
+            return response()->json(['success' => false, 'message' => 'Tidak ada foto yang dikirim'], 400);
+        }
+
         return response()->json([
-            'message' => 'Status berhasil diperbarui',
-            'data' => $report
+            'success' => true,
+            'message' => "$uploadedCount foto baru berhasil ditambahkan!",
+            'data' => $report->load('images')
         ], 200);
     }
 }
