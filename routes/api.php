@@ -4,11 +4,12 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
 use App\Http\Controllers\AuthController;
 use App\Http\Controllers\MaintenanceController;
+use App\Http\Controllers\UserController;
 
+ 
 
-
-
-
+Route::get('/users', [UserController::class, 'index']);
+Route::get('/users', [App\Http\Controllers\UserController::class, 'index']);
 Route::post('/maintenance/report/{id}/add-photos', [App\Http\Controllers\MaintenanceController::class, 'addPhotos']);
 // Pastikan nama Class-nya adalah MaintenanceController
 Route::put('/maintenance/reports/{id}/status', [MaintenanceController::class, 'updateStatus']);

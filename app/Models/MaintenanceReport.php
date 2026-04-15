@@ -19,7 +19,9 @@ class MaintenanceReport extends Model
         'teknisi',
         'foto_before', 'foto_progress', 'foto_after',
         'latitude', 'longitude',
-        'status'
+        'status',
+        'lokasi_pekerjaan'
+
     ];
 
     public function images() {

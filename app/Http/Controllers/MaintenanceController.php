@@ -27,6 +27,7 @@ class MaintenanceController extends Controller
                 // TAMBAHAN: Izinkan latitude dan longitude masuk
                 'latitude' => 'nullable|string', 
                 'longitude' => 'nullable|string',
+                'lokasi_pekerjaan' => 'nullable|string',
 
                 // Validasi agar bisa menerima banyak file (array)
                 'foto_before.*' => 'nullable|image|max:5120',   
