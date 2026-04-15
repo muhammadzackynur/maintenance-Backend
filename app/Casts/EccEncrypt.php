@@ -4,58 +4,48 @@ namespace App\Casts;
 
 use Illuminate\Contracts\Database\Eloquent\CastsAttributes;
 use App\Services\EccSodiumService;
+use Illuminate\Support\Facades\Log;
 
 class EccEncrypt implements CastsAttributes
 {
-    /**
-     * Mengubah data dari database (Ciphertext) menjadi data asli (Plaintext)
-     */
     public function get($model, string $key, $value, array $attributes)
     {
-        // Jika data kosong atau null, langsung kembalikan
-        if (is_null($value) || $value === '') {
-            return $value;
-        }
+        // 1. Jika data kosong, langsung kembalikan
+        if (empty($value)) return $value;
 
         try {
             $ecc = app(EccSodiumService::class);
-            
-            // Mengambil key dari env
-            $privateKey = env('ECC_PRIVATE_KEY');
-            $publicKey = env('ECC_PUBLIC_KEY');
+            $privKey = env('ECC_PRIVATE_KEY');
+            $pubKey = env('ECC_PUBLIC_KEY');
 
-            // Jika key tidak ada, jangan paksa dekripsi agar tidak error
-            if (!$privateKey || !$publicKey) {
-                return $value;
-            }
+            // 2. Jika key di .env belum diset, jangan paksa dekripsi
+            if (!$privKey || !$pubKey) return $value;
 
-            return $ecc->decrypt($value, $privateKey, $publicKey);
-        } catch (\Exception $e) {
-            // Jika gagal dekripsi (misal data bukan format ECC), kembalikan data aslinya
+            // 3. Coba dekripsi
+            $decrypted = $ecc->decrypt($value, $privKey, $pubKey);
+
+            // 4. Jika hasil dekripsi null atau error, kembalikan nilai asli (Plaintext)
+            return $decrypted ?: $value;
+
+        } catch (\Throwable $e) {
+            // Jika terjadi error teknis apapun, jangan crash! 
+            // Cukup tampilkan data aslinya saja.
             return $value;
         }
     }
 
-    /**
-     * Mengubah data asli (Plaintext) menjadi data rahasia (Ciphertext) sebelum simpan ke DB
-     */
     public function set($model, string $key, $value, array $attributes)
     {
-        // Jika data kosong, jangan dienkripsi
-        if (is_null($value) || $value === '') {
-            return $value;
-        }
+        if (empty($value)) return $value;
 
         try {
             $ecc = app(EccSodiumService::class);
-            $publicKey = env('ECC_PUBLIC_KEY');
+            $pubKey = env('ECC_PUBLIC_KEY');
 
-            if (!$publicKey) {
-                return $value;
-            }
+            if (!$pubKey) return $value;
 
-            return $ecc->encrypt($value, $publicKey);
-        } catch (\Exception $e) {
+            return $ecc->encrypt($value, $pubKey);
+        } catch (\Throwable $e) {
             return $value;
         }
     }
