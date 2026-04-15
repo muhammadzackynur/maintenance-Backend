@@ -28,7 +28,6 @@ class User extends Authenticatable
     protected $casts = [
         'email_verified_at' => 'datetime',
         'name' => EccEncrypt::class, // Contoh: Enkripsi nama user
-        'biometric_hash' => string,
         'user_id' => EccEncrypt::class,
     ];
 
