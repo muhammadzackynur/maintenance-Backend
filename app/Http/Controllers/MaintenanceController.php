@@ -6,13 +6,15 @@ use Illuminate\Http\Request;
 use App\Models\MaintenanceReport;
 use App\Models\ReportImage; 
 use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Facades\Validator;
 
 class MaintenanceController extends Controller
 {
     public function store(Request $request)
     {
         try {
-            // 1. Validasi data teks (Wajib) dan array foto (Opsional)
+            // 1. Validasi data teks dan foto
+            // PERBAIKAN: foto_before sekarang 'required' dan harus berupa array minimal 1 file
             $validated = $request->validate([
                 'user_id' => 'required',
                 'area' => 'required|string',
@@ -24,15 +26,22 @@ class MaintenanceController extends Controller
                 'uraian_pekerjaan' => 'required|string',
                 'teknisi' => 'required|string',
                 
-                // TAMBAHAN: Izinkan latitude dan longitude masuk
+                // Koordinat Lokasi
                 'latitude' => 'nullable|string', 
                 'longitude' => 'nullable|string',
                 'lokasi_pekerjaan' => 'nullable|string',
 
-                // Validasi agar bisa menerima banyak file (array)
-                'foto_before.*' => 'nullable|image|max:5120',   
+                // Validasi Foto (foto_before Wajib diisi)
+                'foto_before' => 'required|array|min:1', 
+                'foto_before.*' => 'image|max:5120',   
+                
+                // Foto Progress dan After (Opsional)
                 'foto_progress.*' => 'nullable|image|max:5120',
                 'foto_after.*' => 'nullable|image|max:5120',
+            ], [
+                // Custom Message agar user paham kenapa gagal
+                'foto_before.required' => 'Bukti foto "Before" wajib diunggah!',
+                'foto_before.min' => 'Minimal harus mengunggah 1 foto "Before".',
             ]);
 
             // 2. Simpan data teks utama ke tabel maintenance_reports
@@ -44,10 +53,10 @@ class MaintenanceController extends Controller
             foreach ($categories as $category) {
                 if ($request->hasFile($category)) {
                     foreach ($request->file($category) as $file) {
-                        // Simpan file fisik
+                        // Simpan file fisik ke folder storage/app/public/reports
                         $path = $file->store('reports', 'public');
 
-                        // Simpan path ke tabel terpisah agar bisa lebih dari 10 gambar
+                        // Simpan path ke tabel report_images
                         ReportImage::create([
                             'maintenance_report_id' => $report->id,
                             'image_path' => $path,
@@ -59,27 +68,26 @@ class MaintenanceController extends Controller
 
             return response()->json([
                 'success' => true,
-                'message' => 'Laporan dan semua foto berhasil dikirim!',
-                'data' => $report->load('images') // Load gambar agar langsung muncul hasilnya
+                'message' => 'Laporan dan bukti foto berhasil dikirim!',
+                'data' => $report->load('images') 
             ], 201);
 
         } catch (\Illuminate\Validation\ValidationException $e) {
             return response()->json([
                 'success' => false,
-                'message' => 'Validasi gagal',
+                'message' => 'Validasi gagal: Bukti foto belum lengkap.',
                 'errors' => $e->errors()
             ], 422);
         } catch (\Exception $e) {
             return response()->json([
                 'success' => false,
-                'message' => 'Gagal: ' . $e->getMessage()
+                'message' => 'Gagal menyimpan laporan: ' . $e->getMessage()
             ], 500);
         }
     }
 
     public function index()
     {
-        // Gunakan with('images') agar daftar foto muncul di Dashboard Admin/Teknisi
         $reports = MaintenanceReport::with('images')->orderBy('id', 'desc')->get();
         
         return response()->json([
@@ -97,7 +105,7 @@ class MaintenanceController extends Controller
 
         $dataToUpdate = $request->except(['_method', 'evidence_material', 'evidence_ukur', 'evidence_pendukung']);
 
-        // Handle update file evidences (ZIP/RAR)
+        // Handle update file evidences (ZIP/RAR/PDF)
         $files = ['evidence_material', 'evidence_ukur', 'evidence_pendukung'];
         foreach ($files as $field) {
             if ($request->hasFile($field)) {
@@ -141,7 +149,6 @@ class MaintenanceController extends Controller
                     ReportImage::create([
                         'maintenance_report_id' => $report->id,
                         'image_path' => $path,
-                        // Menghapus kata 'foto_' untuk mendapatkan tipe aslinya
                         'type' => str_replace('foto_', '', $category) 
                     ]);
                     $uploadedCount++;
