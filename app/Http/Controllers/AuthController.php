@@ -10,13 +10,15 @@ use Exception;
 
 class AuthController extends Controller {
     
+    // Sesuaikan path ini dengan hasil 'where python' di laptop Anda
+    private $pythonPath = '"C:\Users\zacky\AppData\Local\Programs\Python\Python310\python.exe"';
+
     // --- LOGIN STANDAR KETIK ID ---
     public function login(Request $request) {
         try {
             $userIdInput = trim($request->user_id);
             $roleInput = strtolower(trim($request->role));
 
-            // Mapping role agar sesuai dengan yang ada di Database
             $roleDb = (strpos($roleInput, 'admin') !== false || strpos($roleInput, 'administrasi') !== false) 
                       ? 'Tim Administrasi' : 'Tim Lapangan'; 
 
@@ -54,9 +56,10 @@ class AuthController extends Controller {
         }
     }
 
-    // --- MENDAFTARKAN ATAU MEMPERBARUI WAJAH ---
+    // --- MENDAFTARKAN WAJAH KE DATABASE ---
     public function registerFingerprint(Request $request) {
         set_time_limit(180); 
+        Log::info("Register Biometric Attempt untuk ID: " . $request->user_id);
 
         try {
             $request->validate([
@@ -65,67 +68,47 @@ class AuthController extends Controller {
             ]);
 
             $user = User::where('user_id', $request->user_id)->first();
-            if (!$user) return response()->json(['success' => false, 'message' => 'User tidak ditemukan.']);
+            if (!$user) {
+                return response()->json(['success' => false, 'message' => 'User ID tidak terdaftar di sistem.']);
+            }
 
-            // --- TRIK BARU: SIMPAN LANGSUNG KE FOLDER PERMANEN ---
-            // Kita tidak pakai folder temp lagi, langsung amankan ke public/faces
+            // Simpan foto di storage/app/public/faces
             $namaFile = $user->user_id . '.jpg';
             $path = $request->file('fingerprint_image')->storeAs('faces', $namaFile, 'public');
             
-            // Path lengkap untuk dibaca oleh Python
             $fullPath = storage_path('app/public/' . $path);
             $enginePath = base_path('engine.py');
 
-            // 1. VERIFIKASI PEMILIK ASLI (Jika sudah ada data wajah di DB sebelumnya)
-            if (!empty($user->biometric_hash)) {
-                $hashPath = storage_path('app/temp_hash_verif_' . uniqid() . '.txt');
-                file_put_contents($hashPath, $user->biometric_hash);
-
-                $matchCommand = 'python "' . $enginePath . '" match "' . $fullPath . '" "' . $hashPath . '" 2>&1';
-                $matchResult = trim(shell_exec($matchCommand));
-                @unlink($hashPath);
-
-                if ($matchResult !== "100") {
-                    // Karena ini bukan pemilik asli, hapus foto yang baru saja numpang masuk
-                    Storage::disk('public')->delete($path); 
-                    return response()->json([
-                        'success' => false, 
-                        'message' => 'ID Terkunci! Wajah Anda tidak cocok dengan pemilik asli ID ini.'
-                    ], 403);
-                }
-            }
-
-            // 2. EKSTRAK WAJAH BARU (Register)
-            $command = 'python "' . $enginePath . '" register "' . $fullPath . '" 2>&1';
+            // 1. EKSTRAK 128 TITIK WAJAH MENGGUNAKAN PYTHON
+            $command = $this->pythonPath . ' "' . $enginePath . '" register "' . $fullPath . '" 2>&1';
             $hashResult = trim(shell_exec($command));
 
-            // 3. VALIDASI HASIL AI
+            // 2. VALIDASI HASIL DARI PYTHON
             if (empty($hashResult) || $hashResult === "TIDAK_ADA_WAJAH" || strpos($hashResult, 'Traceback') !== false) {
-                Log::error("Python Register Error: " . $hashResult);
-                
-                // Jika AI gagal baca muka, hapus foto tersebut
+                Log::error("Python AI Error: " . $hashResult);
                 Storage::disk('public')->delete($path); 
-                return response()->json([
-                    'success' => false, 
-                    'message' => 'AI Gagal mendeteksi wajah. Pastikan cahaya terang dan wajah terlihat jelas.'
-                ]);
+                return response()->json(['success' => false, 'message' => 'AI Gagal mendeteksi wajah.']);
             }
 
-            // 4. SIMPAN KE DATABASE
-            // Karena fotonya sudah ada di public/faces, kita tinggal menyimpan Sandi AI ke Database.
-            $user->biometric_hash = $hashResult;
-            $user->save();
+            // 3. UPDATE DATABASE (Paksa simpan ke kolom biometric_hash)
+            $updated = User::where('user_id', $user->user_id)->update([
+                'biometric_hash' => $hashResult
+            ]);
 
-            return response()->json(['success' => true, 'message' => 'Data Wajah & Foto BERHASIL disimpan permanen di Storage!']);
+            if ($updated) {
+                Log::info("MYSQL UPDATE SUCCESS: " . $user->user_id);
+                return response()->json(['success' => true, 'message' => 'Wajah berhasil didaftarkan secara permanen!']);
+            } else {
+                return response()->json(['success' => false, 'message' => 'Gagal memperbarui data di database.']);
+            }
             
         } catch (Exception $e) {
-            Log::error("Register Biometric Error: " . $e->getMessage());
+            Log::error("Register Biometric Exception: " . $e->getMessage());
             return response()->json(['success' => false, 'message' => 'Error Server: ' . $e->getMessage()], 500);
         }
     }
 
-    // --- LOGIN MENGGUNAKAN WAJAH (AUTO SCAN) ---
-    // Di sini kita tetap pakai file temp, agar foto absen login sehari-hari tidak memenuhi disk komputer.
+    // --- LOGIN WAJAH (AUTO SCAN) ---
     public function loginFingerprint(Request $request) {
         try {
             $request->validate([
@@ -135,39 +118,26 @@ class AuthController extends Controller {
 
             $user = User::where('user_id', $request->user_id)->first();
             if (!$user || empty($user->biometric_hash)) {
-                return response()->json(['success' => false, 'message' => 'Akun belum memiliki data Wajah.'], 404);
+                return response()->json(['success' => false, 'message' => 'Anda belum mendaftarkan wajah.'], 404);
             }
 
-            // Foto jepretan saat login (sementara)
             $path = $request->file('fingerprint_image')->store('temp');
             $fullPath = storage_path('app/' . $path);
             $enginePath = base_path('engine.py');
 
-            // Simpan Hash DB ke file text sementara untuk dibandingkan oleh Python
             $hashPath = storage_path('app/temp_hash_login_' . uniqid() . '.txt');
             file_put_contents($hashPath, $user->biometric_hash);
 
-            $command = 'python "' . $enginePath . '" match "' . $fullPath . '" "' . $hashPath . '" 2>&1';
+            $command = $this->pythonPath . ' "' . $enginePath . '" match "' . $fullPath . '" "' . $hashPath . '" 2>&1';
             $matchResult = trim(shell_exec($command));
 
-            // Bersihkan file jepretan SEMENTARA saat login saja. 
-            // (Foto master saat pendaftaran aman di public/faces)
             Storage::delete($path);
             if (file_exists($hashPath)) @unlink($hashPath);
 
             if ($matchResult === "100") {
                 return response()->json(['success' => true, 'message' => 'Wajah Cocok!', 'user' => $user], 200);
-            } elseif ($matchResult === "0") {
-                return response()->json(['success' => false, 'message' => 'Wajah Tidak Dikenali.'], 401);
-            } elseif ($matchResult === "TIDAK_ADA_WAJAH") {
-                return response()->json(['success' => false, 'message' => 'Wajah tidak terdeteksi kamera. Coba di tempat yang lebih terang.'], 400);
             } else {
-                Log::error("Python Match Error Result: " . $matchResult);
-                return response()->json([
-                    'success' => false, 
-                    'message' => 'Gagal memproses pengenalan wajah.',
-                    'debug' => substr($matchResult, 0, 50)
-                ], 500);
+                return response()->json(['success' => false, 'message' => 'Wajah Tidak Dikenali.'], 401);
             }
 
         } catch (Exception $e) {

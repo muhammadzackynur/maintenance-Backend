@@ -8,7 +8,6 @@ use Illuminate\Notifications\Notifiable;
 use Laravel\Sanctum\HasApiTokens;
 use App\Casts\EccEncrypt;
 
-
 class User extends Authenticatable
 {
     use HasApiTokens, HasFactory, Notifiable;
@@ -17,19 +16,11 @@ class User extends Authenticatable
         'user_id',
         'name',
         'role',
-        'biometric_hash',
+        'biometric_hash', // Kolom wajib untuk menyimpan titik wajah
     ];
     
     protected $hidden = [
         'password',
         'remember_token',
     ];
-
-    protected $casts = [
-        'email_verified_at' => 'datetime',
-        'name' => EccEncrypt::class, // Contoh: Enkripsi nama user
-        'user_id' => EccEncrypt::class,
-    ];
-
-    
 }
