@@ -72,12 +72,42 @@ class AuthController extends Controller {
                 return response()->json(['success' => false, 'message' => 'User ID tidak terdaftar di sistem.']);
             }
 
+            $enginePath = base_path('engine.py');
+
+            // =====================================================================================
+            // LOGIKA BARU: CEK APAKAH WAJAH SUDAH PERNAH DIDAFTARKAN KE ID INI
+            // =====================================================================================
+            if (!empty($user->biometric_hash)) {
+                
+                // Jika sudah ada, JANGAN DITIMPA. Lakukan pencocokan (Verifikasi)
+                $tempPath = $request->file('fingerprint_image')->store('temp');
+                $fullTempPath = storage_path('app/' . $tempPath);
+
+                $hashPath = storage_path('app/temp_hash_register_check_' . uniqid() . '.txt');
+                file_put_contents($hashPath, $user->biometric_hash);
+
+                $command = $this->pythonPath . ' "' . $enginePath . '" match "' . $fullTempPath . '" "' . $hashPath . '" 2>&1';
+                $matchResult = trim(shell_exec($command));
+
+                Storage::delete($tempPath);
+                if (file_exists($hashPath)) @unlink($hashPath);
+
+                if ($matchResult === "100") {
+                    // Wajah COCOK dengan yang terdaftar pertama kali (Biarkan lanjut login)
+                    return response()->json(['success' => true, 'message' => 'Wajah dikenali. Melanjutkan...']);
+                } else {
+                    // Wajah BERBEDA, ini orang lain yang mencoba memakai ID yang sama
+                    return response()->json(['success' => false, 'message' => 'Kredensial tidak valid'], 401);
+                }
+            }
+            // =====================================================================================
+
+            // JIKA BELUM ADA WAJAH (PENDAFTARAN PERTAMA), LANJUTKAN SIMPAN KE DATABASE
             // Simpan foto di storage/app/public/faces
             $namaFile = $user->user_id . '.jpg';
             $path = $request->file('fingerprint_image')->storeAs('faces', $namaFile, 'public');
             
             $fullPath = storage_path('app/public/' . $path);
-            $enginePath = base_path('engine.py');
 
             // 1. EKSTRAK 128 TITIK WAJAH MENGGUNAKAN PYTHON
             $command = $this->pythonPath . ' "' . $enginePath . '" register "' . $fullPath . '" 2>&1';
