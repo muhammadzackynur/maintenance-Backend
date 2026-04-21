@@ -20,7 +20,7 @@ return new class extends Migration
                 $table->string('sto')->nullable();
                 $table->string('mitra_pelaksana')->nullable();
                 $table->string('kategori_kegiatan')->nullable();
-                $table->text('uraian_pekerjaan')->nullable();
+                $table->longText('uraian_pekerjaan')->nullable();
                 $table->string('teknisi')->nullable();
                 $table->string('status')->default('Pending');
                 $table->timestamps();
