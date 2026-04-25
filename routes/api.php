@@ -8,6 +8,10 @@ use App\Http\Controllers\UserController;
 
  
 
+
+
+Route::get('/notifications', [App\Http\Controllers\MaintenanceController::class, 'getNotifications']);
+Route::post('/notifications/{id}/read', [App\Http\Controllers\MaintenanceController::class, 'markAsRead']);
 Route::get('/users', [UserController::class, 'index']);
 Route::get('/users', [App\Http\Controllers\UserController::class, 'index']);
 Route::post('/maintenance/report/{id}/add-photos', [App\Http\Controllers\MaintenanceController::class, 'addPhotos']);
