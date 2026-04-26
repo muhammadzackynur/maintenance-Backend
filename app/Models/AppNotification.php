@@ -7,5 +7,5 @@ use Illuminate\Database\Eloquent\Model;
 class AppNotification extends Model
 {
     use HasFactory;
-    protected $fillable = ['title', 'message', 'is_read'];
+    protected $fillable = ['user_id','title', 'message', 'is_read'];
 }

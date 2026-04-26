@@ -5,7 +5,7 @@ namespace App\Http\Controllers;
 use Illuminate\Http\Request;
 use App\Models\MaintenanceReport;
 use App\Models\ReportImage; 
-use App\Models\AppNotification; // TAMBAHAN: Import model AppNotification
+use App\Models\AppNotification; 
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Support\Facades\Http;
@@ -64,11 +64,12 @@ class MaintenanceController extends Controller
                 }
             }
 
-            // 4. KIRIM NOTIFIKASI PUSH VIA ONESIGNAL (Pop-up di layar)
+            // 4. KIRIM NOTIFIKASI PUSH VIA ONESIGNAL (Pop-up di layar untuk Admin)
             $this->sendNotification($request->uraian_pekerjaan, $request->sto);
 
-            // 5. SIMPAN NOTIFIKASI KE DATABASE (Untuk list di ikon lonceng)
+            // 5. SIMPAN NOTIFIKASI KE DATABASE (Untuk list di ikon lonceng Admin)
             AppNotification::create([
+                'user_id' => 'admin', // <-- Disimpan khusus untuk admin
                 'title' => 'Laporan Maintenance Baru!',
                 'message' => $request->uraian_pekerjaan . "\nSTO " . $request->sto,
                 'is_read' => false
@@ -95,12 +96,12 @@ class MaintenanceController extends Controller
     }
 
     /**
-     * Fungsi Helper untuk mengirim notifikasi OneSignal
+     * Fungsi Helper untuk mengirim notifikasi laporan baru ke Tim Administrasi
      */
     private function sendNotification($uraian_pekerjaan, $sto)
     {
         $appId = "012d1524-5b9a-4834-8dab-8741b8dbd0c1";
-        $restApiKey = "os_v2_app_aewrkjc3tjedjdnlq5a3rw6qygocwvzq2d7unp45gof5pieixgew6zxclyvtxlyat7eagia34liydztt5bqtinghtlmoijamkqer4ty";
+        $restApiKey = "os_v2_app_aewrkjc3tjedjdnlq5a3rw6qyh5e33rkj22eqrnme6icgea23fjvilujduc6ov6lf6srrpojxsygk3qzn5mmpedmais75lpxn5m2iii";
 
         try {
             $response = Http::withHeaders([
@@ -112,8 +113,15 @@ class MaintenanceController extends Controller
                 'filters' => [
                     ['field' => 'tag', 'key' => 'role', 'relation' => '=', 'value' => 'tim_administrasi']
                 ],
+                'target_channel' => 'push', // <-- Menegaskan ini adalah push notification
                 'headings' => ['en' => 'Laporan Maintenance Baru!'],
                 'contents' => ['en' => $uraian_pekerjaan . "\nSTO " . $sto],
+
+                // --- TAMBAHAN BARU: Memaksa Pop-up Prioritas Tinggi di Android ---
+                'android_visibility' => 1,
+                'priority' => 10,
+                'android_channel_id' => 'channel_vip_super', // <-- NAMA CHANNEL BARU!
+                // ------------------------------------------------------------------
             ]);
 
             if (!$response->successful()) {
@@ -157,6 +165,10 @@ class MaintenanceController extends Controller
 
         $report->status = $request->status;
         $report->save();
+
+        // Kirim notifikasi status HANYA ke pembuat laporan
+        $this->sendStatusNotification($report->user_id, $report->id, $request->status);
+
         return response()->json(['message' => 'Status diperbarui', 'data' => $report], 200);
     }
 
@@ -189,10 +201,12 @@ class MaintenanceController extends Controller
     // ====================================================================
     // FUNGSI UNTUK FITUR LONCENG NOTIFIKASI DI FRONTEND
     // ====================================================================
-    public function getNotifications()
+    public function getNotifications(Request $request)
     {
-        $notifs = AppNotification::orderBy('created_at', 'desc')->get();
-        $unreadCount = AppNotification::where('is_read', false)->count();
+        $userId = $request->query('user_id', 'admin'); 
+
+        $notifs = AppNotification::where('user_id', $userId)->orderBy('created_at', 'desc')->get();
+        $unreadCount = AppNotification::where('user_id', $userId)->where('is_read', false)->count();
 
         return response()->json([
             'success' => true, 
@@ -209,5 +223,62 @@ class MaintenanceController extends Controller
             $notif->save();
         }
         return response()->json(['success' => true]);
+    }
+
+    // ====================================================================
+    // FUNGSI HELPER NOTIFIKASI STATUS KE TIM LAPANGAN
+    // ====================================================================
+    /**
+     * Fungsi Helper untuk mengirim notifikasi status ke Tim Lapangan spesifik
+     */
+    private function sendStatusNotification($targetUserId, $reportId, $status)
+    {
+        $appId = "012d1524-5b9a-4834-8dab-8741b8dbd0c1";
+        $restApiKey = "os_v2_app_aewrkjc3tjedjdnlq5a3rw6qyh5e33rkj22eqrnme6icgea23fjvilujduc6ov6lf6srrpojxsygk3qzn5mmpedmais75lpxn5m2iii";
+
+        // Sesuaikan bahasa status
+        $statusText = strtolower($status) == 'verified' ? 'Diverifikasi' : 'Ditolak';
+        
+        // Format ID Laporan (Misal: MAINT-001)
+        $formattedId = "MAINT-" . str_pad($reportId, 3, '0', STR_PAD_LEFT);
+
+        // Simpan ke database khusus untuk user_id teknisi tersebut
+        AppNotification::create([
+            'user_id' => (string)$targetUserId,
+            'title' => "Laporan Anda $statusText!",
+            'message' => "Laporan ID $formattedId telah $statusText oleh Admin.",
+            'is_read' => false
+        ]);
+
+        try {
+            $response = Http::withHeaders([
+                'Authorization' => 'Basic ' . $restApiKey,
+                'Content-Type' => 'application/json',
+                'accept' => 'application/json',
+            ])->post('https://onesignal.com/api/v1/notifications', [
+                'app_id' => $appId,
+                
+                // MENGGUNAKAN METODE TARGETING TERBARU ONESIGNAL
+                'include_aliases' => [
+                    'external_id' => [(string)$targetUserId]
+                ],
+                'target_channel' => 'push',
+                
+                'headings' => ['en' => "Laporan Anda $statusText!"],
+                'contents' => ['en' => "Laporan dengan ID $formattedId telah $statusText oleh Tim Administrasi."],
+
+                // --- MEMASTIKAN POP-UP JUGA UNTUK TIM LAPANGAN ---
+                'android_visibility' => 1,
+                'priority' => 10,
+                'android_channel_id' => 'channel_vip_super', // <-- NAMA CHANNEL BARU!
+                // --------------------------------------------------
+            ]);
+
+            if (!$response->successful()) {
+                Log::error('OneSignal Status Notification Error: ' . $response->body());
+            }
+        } catch (\Exception $e) {
+            Log::error('OneSignal Status Exception: ' . $e->getMessage());
+        }
     }
 }

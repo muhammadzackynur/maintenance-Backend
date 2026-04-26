@@ -6,28 +6,46 @@ use Illuminate\Support\Facades\Schema;
 
 return new class extends Migration
 {
+    /**
+     * Run the migrations.
+     *
+     * @return void
+     */
     public function up()
     {
-        // Mengecek apakah tabel sudah ada. Jika belum, baru dibuat.
-        // Jika sudah ada, Laravel akan mengabaikan blok ini (Data Anda aman!)
-        if (!Schema::hasTable('maintenance_reports')) {
-            Schema::create('maintenance_reports', function (Blueprint $table) {
-                $table->id();
-                $table->string('user_id');
-                $table->string('area')->nullable();
-                $table->string('district')->nullable();
-                $table->string('witel')->nullable();
-                $table->string('sto')->nullable();
-                $table->string('mitra_pelaksana')->nullable();
-                $table->string('kategori_kegiatan')->nullable();
-                $table->longText('uraian_pekerjaan')->nullable();
-                $table->string('teknisi')->nullable();
-                $table->string('status')->default('Pending');
-                $table->timestamps();
-            });
-        }
-    }
+        Schema::create('maintenance_reports', function (Blueprint $table) {
+            $table->id();
+            $table->string('user_id');
+            $table->string('area');
+            $table->string('district');
+            $table->string('witel');
+            $table->string('sto');
+            $table->string('mitra_pelaksana');
+            $table->string('kategori_kegiatan');
+            $table->text('uraian_pekerjaan');
+            $table->string('teknisi');
+            
+            // Kolom lokasi
+            $table->string('latitude')->nullable();
+            $table->string('longitude')->nullable();
+            $table->text('lokasi_pekerjaan')->nullable();
 
+            $table->string('status')->default('PENDING');
+
+            // Bukti Evidence
+            $table->string('evidence_material')->nullable();
+            $table->string('evidence_ukur')->nullable();
+            $table->string('evidence_pendukung')->nullable();
+            
+            $table->timestamps();
+        });
+    } // <-- Cukup satu kurung kurawal tutup di sini
+
+    /**
+     * Reverse the migrations.
+     *
+     * @return void
+     */
     public function down()
     {
         Schema::dropIfExists('maintenance_reports');
