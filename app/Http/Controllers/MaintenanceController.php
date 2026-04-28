@@ -173,7 +173,7 @@ class MaintenanceController extends Controller
             }
         }
 
-        return $uploadedCount == 0 p
+        return $uploadedCount == 0 
             ? response()->json(['success' => false, 'message' => 'Tidak ada foto'], 400)
             : response()->json(['success' => true, 'message' => "$uploadedCount foto berhasil ditambahkan!", 'data' => $report->load('images')], 200);
     }
