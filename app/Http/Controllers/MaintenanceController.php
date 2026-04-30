@@ -92,7 +92,7 @@ class MaintenanceController extends Controller
     private function sendNotification($teknisi, $sto)
     {
         $appId = "c5e1b4de-5fdf-406e-ab45-7bb5b47ac450";
-        $restApiKey = "os_v2_app_yxq3jxs735ag5k2fpo23i6wekcrw4wlm7qwusbncojyaqj5bxcaa42ookwm7ycnjwakivvtecnpjyofpakeu7nkxdcb6oy4uhuced5y";
+        $restApiKey = "os_v2_app_yxq3jxs735ag5k2fpo23i6wekdmoy55xthpuu5elzzkg267ne6bf3jzaj2qyo7li6fokjxg6fvymt4ofhvko6ghfisoolwnrfsn5xvq";
 
         try {
             $response = Http::withHeaders([
