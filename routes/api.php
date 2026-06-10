@@ -8,7 +8,8 @@ use App\Http\Controllers\UserController;
 
  
 
-
+// Tambahkan baris ini di dalam file routes/api.php Anda
+Route::get('/user/achievements/{userId}', [\App\Http\Controllers\UserController::class, 'getAchievements']);
 
 Route::get('/notifications', [App\Http\Controllers\MaintenanceController::class, 'getNotifications']);
 Route::post('/notifications/{id}/read', [App\Http\Controllers\MaintenanceController::class, 'markAsRead']);
