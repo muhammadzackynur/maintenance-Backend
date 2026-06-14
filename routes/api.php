@@ -8,6 +8,10 @@ use App\Http\Controllers\UserController;
 
  
 
+// Tambahkan ini di bagian route maintenance reports
+Route::get('/maintenance/reports/{id}/export-word', [\App\Http\Controllers\MaintenanceController::class, 'exportWord']);
+
+Route::get('/maintenance/reports/{id}/download-zip', [\App\Http\Controllers\MaintenanceController::class, 'downloadPhotosZip']);
 // Tambahkan baris ini di dalam file routes/api.php Anda
 Route::get('/user/achievements/{userId}', [\App\Http\Controllers\UserController::class, 'getAchievements']);
 
