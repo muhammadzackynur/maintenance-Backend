@@ -125,6 +125,72 @@ class MaintenanceController extends Controller
         return response()->json(['status' => 'success', 'data' => $reports], 200);
     }
 
+    // ====================================================================
+    // FITUR: ASSIGN TEKNISI MANUAL DAN GET HISTORY
+    // ====================================================================
+
+    /**
+     * Endpoint untuk Admin mengutus/assign teknisi secara manual (jika diperlukan)
+     */
+    public function assignTechnicians(Request $request, $id)
+    {
+        $report = MaintenanceReport::find($id);
+        if (!$report) {
+            return response()->json(['success' => false, 'message' => 'Data laporan tidak ditemukan'], 404);
+        }
+
+        $request->validate([
+            'assigned_technicians' => 'required|array' 
+        ]);
+
+        $report->assigned_technicians = $request->assigned_technicians;
+        $report->status = 'OPEN';
+        $report->save();
+
+        return response()->json([
+            'success' => true, 
+            'message' => 'Teknisi berhasil ditugaskan dan tiket sekarang OPEN.', 
+            'data' => $report
+        ], 200);
+    }
+
+    /**
+     * Endpoint untuk mengambil history khusus (Status CLOSE)
+     * Hanya muncul untuk pelapor awal atau teknisi yang ter-assign
+     */
+    public function getHistory($userId)
+    {
+        $reports = MaintenanceReport::with('images')
+            ->where('status', 'CLOSE')
+            ->where(function ($query) use ($userId) {
+                // User adalah si pelapor
+                $query->where('user_id', $userId) 
+                      // ATAU User adalah teknisi yang ditugaskan (pencarian di array JSON)
+                      ->orWhereJsonContains('assigned_technicians', (int)$userId) 
+                      ->orWhereJsonContains('assigned_technicians', (string)$userId);
+            })
+            ->orderBy('updated_at', 'desc')
+            ->get();
+
+        if ($reports->isEmpty()) {
+            return response()->json([
+                'success' => true,
+                'message' => 'Belum ada riwayat pekerjaan.',
+                'data' => []
+            ], 200);
+        }
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Berhasil mengambil data riwayat.',
+            'data' => $reports
+        ], 200);
+    }
+
+    // ====================================================================
+    // UPDATE DATA, STATUS (DENGAN ASSIGN OTOMATIS), DAN FOTO
+    // ====================================================================
+
     public function updateData(Request $request, $id)
     {
         $report = MaintenanceReport::find($id);
@@ -146,14 +212,44 @@ class MaintenanceController extends Controller
         return response()->json(['success' => true, 'data' => $report], 200);
     }
 
+    /**
+     * Update Status Laporan (Termasuk auto-assign teknisi saat status OPEN)
+     */
     public function updateStatus(Request $request, $id)
     {
         $report = MaintenanceReport::find($id);
-        if (!$report) return response()->json(['message' => 'Data tidak ditemukan'], 404);
+        if (!$report) {
+            return response()->json(['message' => 'Data tidak ditemukan'], 404);
+        }
 
-        $report->status = $request->status;
+        $newStatus = $request->status;
+        $report->status = $newStatus;
+
+        // ========================================================
+        // LOGIKA OTOMATIS: JIKA ADMIN VERIFIKASI (STATUS -> OPEN)
+        // ========================================================
+        if ($newStatus === 'OPEN') {
+            
+            // Sistem otomatis mencari user dengan role Pengguna Lapangan
+            $technicians = \App\Models\User::where('role', 'Pengguna Lapangan')
+                // ->where('sto', $report->sto) // Hilangkan komentar (//) di awal baris ini jika ingin memfilter teknisi berdasarkan STO yang sama dengan laporan
+                ->inRandomOrder() 
+                ->take(5) // Batas maksimal teknisi yang diutus otomatis (misal: 5 orang)
+                ->pluck('id') 
+                ->toArray(); 
+
+            // Masukkan ID teknisi terpilih ke kolom assigned_technicians
+            $report->assigned_technicians = $technicians;
+        }
+
         $report->save();
-        return response()->json(['message' => 'Status diperbarui', 'data' => $report], 200);
+
+        return response()->json([
+            'success'  => true,
+            'message'  => 'Status diperbarui. Jika OPEN, teknisi telah diutus otomatis oleh sistem.',
+            'data'     => $report,
+            'assigned' => $report->assigned_technicians ?? [] // Menampilkan ID siapa saja yang diutus
+        ], 200);
     }
 
     public function addPhotos(Request $request, $id)
@@ -186,37 +282,31 @@ class MaintenanceController extends Controller
     public function downloadPhotosZip($id)
     {
         try {
-            // Ambil data laporan beserta relasi fotonya
             $report = \App\Models\MaintenanceReport::with('images')->findOrFail($id);
             
             if ($report->images->isEmpty()) {
                 return response()->json(['message' => 'Tidak ada foto untuk diunduh'], 404);
             }
 
-            // Inisialisasi proses pembuatan ZIP
             $zip = new \ZipArchive();
             $zipFileName = 'Bukti_Foto_MAINT-' . str_pad($id, 3, '0', STR_PAD_LEFT) . '.zip';
             $zipPath = storage_path('app/public/' . $zipFileName);
 
             if ($zip->open($zipPath, \ZipArchive::CREATE | \ZipArchive::OVERWRITE) === TRUE) {
                 
-                // Buat struktur Folder Utama di dalam ZIP
                 $baseDir = 'Bukti_MAINT_' . str_pad($id, 3, '0', STR_PAD_LEFT) . '/';
                 
-                // Buat Sub-Folder di dalamnya
                 $zip->addEmptyDir($baseDir . 'Before');
                 $zip->addEmptyDir($baseDir . 'Progress');
                 $zip->addEmptyDir($baseDir . 'After');
 
-                // Masukkan setiap foto ke dalam foldernya masing-masing
                 foreach ($report->images as $index => $img) {
                     $filePath = storage_path('app/public/' . $img->image_path);
                     
                     if (file_exists($filePath)) {
-                        $type = ucfirst(strtolower($img->type)); // Hasilnya: Before / Progress / After
+                        $type = ucfirst(strtolower($img->type)); 
                         $ext = pathinfo($filePath, PATHINFO_EXTENSION);
                         
-                        // Path file di dalam ZIP (Contoh: Bukti_MAINT_001/Before/Before_1.jpg)
                         $fileNameInZip = $baseDir . $type . '/' . $type . '_' . ($index + 1) . '.' . $ext;
                         
                         $zip->addFile($filePath, $fileNameInZip);
@@ -225,7 +315,6 @@ class MaintenanceController extends Controller
                 $zip->close();
             }
 
-            // Kembalikan file ZIP untuk diunduh, lalu otomatis HAPUS file zip dari server agar memori tidak penuh
             return response()->download($zipPath)->deleteFileAfterSend(true);
 
         } catch (\Exception $e) {
@@ -275,17 +364,14 @@ class MaintenanceController extends Controller
                 ]);
             }
 
-            // ── JUDUL ──────────────────────────────────────────────
             $section->addText(
                 "EVIDENCE DOKUMENTASI PEKERJAAN",
                 ['name' => 'Arial', 'size' => 14, 'bold' => true],
                 $centerPara
             );
 
-            // ── GARIS 1: di bawah judul ───────────────────────────
             $section->addText('', $normalStyle, $lineStyle);
 
-            // ── INFO ROWS ─────────────────────────────────────────
             $addInfoRow = function($key, $value, $withBorderBottom = false) use ($section, $boldStyle, $normalStyle, $paraStyle) {
                 $rowPara = array_merge($paraStyle, [
                     'tabs' => [
@@ -316,14 +402,12 @@ class MaintenanceController extends Controller
 
             $section->addTextBreak(1, $normalStyle, $paraStyle);
 
-            // ── FOTO ───────────────────────────────────────────────
             $colWidth  = 2835;
             $imgWidth  = 140;
             $imgHeight = 157;
 
             $insertImages = function($title, $type) use ($section, $report, $boldStyle, $normalStyle, $paraStyle, $centerPara, $colWidth, $imgWidth, $imgHeight) {
 
-                // ── JUDUL DI LUAR TABEL, CENTER ───────────────────
                 $section->addText($title, $boldStyle, $centerPara);
 
                 $images = $report->images->where('type', $type)->values();
@@ -347,13 +431,11 @@ class MaintenanceController extends Controller
                     'alignment'   => \PhpOffice\PhpWord\SimpleType\JcTable::CENTER,
                 ]);
 
-                // ── BARIS 1: header kecil kosong 3 kolom ──────────
                 $tbl->addRow(200);
                 $tbl->addCell($colWidth, $cellBorder)->addText('', $normalStyle, $paraStyle);
                 $tbl->addCell($colWidth, $cellBorder)->addText('', $normalStyle, $paraStyle);
                 $tbl->addCell($colWidth, $cellBorder)->addText('', $normalStyle, $paraStyle);
 
-                // ── BARIS 2+: foto 3 kolom ────────────────────────
                 $totalImages = count($images);
                 $totalCells  = max(3, $totalImages);
                 if ($totalCells % 3 !== 0) {
@@ -392,7 +474,6 @@ class MaintenanceController extends Controller
             $insertImages("PROGRES",  'progress');
             $insertImages("SESUDAH",  'after');
 
-            // ── MATERIAL ───────────────────────────────────────────
             $section->addText("MATERIAL", $boldStyle, $paraStyle);
             if (!empty($report->evidence_material)) {
                 $path = storage_path('app/public/' . $report->evidence_material);
@@ -406,12 +487,10 @@ class MaintenanceController extends Controller
             }
             $section->addTextBreak(1, $normalStyle, $paraStyle);
 
-            // ── KML / KOORDINAT ────────────────────────────────────
             $section->addText("KML", $boldStyle, $paraStyle);
             $section->addText(($report->latitude ?? "-") . ", " . ($report->longitude ?? "-"), $normalStyle, $paraStyle);
             $section->addTextBreak(2, $normalStyle, $paraStyle);
 
-            // ── TANDA TANGAN ───────────────────────────────────────
             $phpWord->addTableStyle('TTDTable', [
                 'cellMarginTop'    => 0,
                 'cellMarginBottom' => 0,
@@ -435,7 +514,6 @@ class MaintenanceController extends Controller
             $cell2->addText("PRASETYAWAN SULUH PAMBUDI", ['bold' => true, 'underline' => 'single', 'name' => 'Arial', 'size' => 11], $centerPara);
             $cell2->addText("NIK. 865802", $normalStyle, $centerPara);
 
-            // ── SIMPAN & DOWNLOAD ──────────────────────────────────
             $fileName = 'Laporan_Pekerjaan_MAINT-' . str_pad($id, 3, '0', STR_PAD_LEFT) . '.docx';
             $filePath = storage_path('app/public/' . $fileName);
 
