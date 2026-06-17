@@ -22,4 +22,9 @@ class User extends Authenticatable
         'password',
         'remember_token',
     ];
+
+    public function assignedReports()
+    {
+        return $this->belongsToMany(Report::class, 'report_technician', 'user_id', 'report_id');
+    }
 }
