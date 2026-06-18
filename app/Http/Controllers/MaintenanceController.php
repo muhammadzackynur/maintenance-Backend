@@ -4,170 +4,229 @@ namespace App\Http\Controllers;
 
 use Illuminate\Http\Request;
 use App\Models\MaintenanceReport;
-use App\Models\ReportImage; 
+use App\Models\ReportImage;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Facades\Validator;
-use Illuminate\Support\Facades\Http; // Digunakan untuk memanggil API OneSignal
-use Illuminate\Support\Facades\Log;  // Digunakan untuk mencatat error jika notifikasi gagal
+use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
 
 class MaintenanceController extends Controller
 {
+    // ====================================================================
+    // KUNCI PRIVATE SERVER UNTUK DEKRIPSI ECC (X25519 + AES-GCM)
+    // Harus sama dengan pasangan dari public key yang ada di Flutter
+    // Simpan nilai ini di .env agar lebih aman:
+    //   ECC_PRIVATE_KEY=<base64_private_key_anda>
+    // ====================================================================
+    private string $serverPrivateKeyBase64 = 'jC28mahRvw+YwdmBX3r8SU9DXyLmzb9NWc7rFnqAk+4=';
+
+    // ====================================================================
+    // HELPER: DEKRIPSI SATU FIELD YANG DIENKRIPSI FLUTTER (ECC + AES-GCM)
+    // ====================================================================
+
+    /**
+     * Mendekripsi satu nilai yang sudah dienkripsi oleh EccHelper Flutter.
+     * Format payload (setelah base64 decode + json decode):
+     *   { client_pub_key, nonce, mac, ciphertext }
+     */
+    private function decryptField(?string $encryptedValue): string
+{
+    if (empty($encryptedValue)) {
+        return '';
+    }
+
+    $start = microtime(true);
+
+    try {
+
+        $json = base64_decode($encryptedValue);
+        $payload = json_decode($json, true);
+
+        if (
+            !$payload ||
+            !isset(
+                $payload['client_pub_key'],
+                $payload['nonce'],
+                $payload['mac'],
+                $payload['ciphertext']
+            )
+        ) {
+            return $encryptedValue;
+        }
+
+        $clientPubKeyBytes = base64_decode($payload['client_pub_key']);
+        $nonce             = base64_decode($payload['nonce']);
+        $mac               = base64_decode($payload['mac']);
+        $ciphertext        = base64_decode($payload['ciphertext']);
+
+        $serverPrivKeyBytes = base64_decode($this->serverPrivateKeyBase64);
+
+        $sharedSecret = sodium_crypto_scalarmult(
+            $serverPrivKeyBytes,
+            $clientPubKeyBytes
+        );
+
+        if (!sodium_crypto_aead_aes256gcm_is_available()) {
+
+            $decrypted = openssl_decrypt(
+                $ciphertext,
+                'aes-256-gcm',
+                $sharedSecret,
+                OPENSSL_RAW_DATA,
+                $nonce,
+                $mac
+            );
+
+        } else {
+
+            $ciphertextWithTag = $ciphertext . $mac;
+
+            $decrypted = sodium_crypto_aead_aes256gcm_decrypt(
+                $ciphertextWithTag,
+                '',
+                $nonce,
+                $sharedSecret
+            );
+        }
+
+        // Hitung waktu dekripsi
+        $elapsedMs = round((microtime(true) - $start) * 1000, 3);
+
+        Log::info("ECC DECRYPT SUCCESS | Waktu: {$elapsedMs} ms");
+
+        return $decrypted ?: $encryptedValue;
+
+    } catch (\Throwable $e) {
+
+        $elapsedMs = round((microtime(true) - $start) * 1000, 3);
+
+        Log::error(
+            "ECC DECRYPT ERROR | Waktu: {$elapsedMs} ms | {$e->getMessage()}"
+        );
+
+        return $encryptedValue;
+    }
+}
+
+    // ====================================================================
+    // HELPER: TRANSFORM SATU REPORT — DEKRIPSI SEMUA FIELD SENSITIF
+    // Dipanggil di index(), getHistory(), dan endpoint lain yang baca data
+    // ====================================================================
+
+    private function transformDecryptedReport(MaintenanceReport $report): MaintenanceReport
+    {
+        $fieldsToDecrypt = [
+            'area',
+            'district',
+            'witel',
+            'sto',
+            'mitra_pelaksana',
+            'kategori_kegiatan',
+            'uraian_pekerjaan',
+            'teknisi',
+            'latitude',
+            'longitude',
+            'lokasi_pekerjaan',
+        ];
+
+        foreach ($fieldsToDecrypt as $field) {
+            if (!empty($report->$field)) {
+                $report->$field = $this->decryptField($report->$field);
+            }
+        }
+
+        return $report;
+    }
+
+    // ====================================================================
+    // STORE: SIMPAN LAPORAN BARU (DATA MASUK SUDAH TERENKRIPSI DARI FLUTTER)
+    // ====================================================================
+
     public function store(Request $request)
     {
         try {
-            // 1. Validasi data teks dan foto
-            $validated = $request->validate([
+            $request->validate([
                 'user_id'           => 'required',
-                'area'              => 'required|string',
-                'district'          => 'required|string',
-                'witel'             => 'required|string',
-                'sto'               => 'required|string',
-                'mitra_pelaksana'   => 'required|string',
-                'kategori_kegiatan' => 'required|string',
-                'uraian_pekerjaan'  => 'required|string',
-                'teknisi'           => 'required|string',
-                
-                // Koordinat Lokasi
-                'latitude'          => 'nullable|string', 
-                'longitude'         => 'nullable|string',
-                'lokasi_pekerjaan'  => 'nullable|string',
-
-                // Validasi Foto
-                'foto_before'       => 'required|array|min:1', 
-                'foto_before.*'     => 'image|max:5120',   
-                
-                'foto_progress'     => 'nullable|array',
-                'foto_progress.*'   => 'nullable|image|max:5120',
-                
-                'foto_after'        => 'nullable|array',
-                'foto_after.*'      => 'nullable|image|max:5120',
-            ], [
-                'foto_before.required' => 'Bukti foto "Before" wajib diunggah!',
-                'foto_before.min'      => 'Minimal harus mengunggah 1 foto "Before".',
+                'area'              => 'required',
+                'district'          => 'required',
+                'witel'             => 'required',
+                'sto'               => 'required',
+                'mitra_pelaksana'   => 'required',
+                'kategori_kegiatan' => 'required',
+                'uraian_pekerjaan'  => 'required',
+                'teknisi'           => 'required',
+                'latitude'          => 'nullable',
+                'longitude'         => 'nullable',
+                'lokasi_pekerjaan'  => 'nullable',
+                'foto_before'       => 'required|array|min:1',
+                'foto_before.*'     => 'image|max:5120',
             ]);
 
-            // 2. Simpan data teks utama ke tabel maintenance_reports
-            $report = MaintenanceReport::create($request->except(['foto_before', 'foto_progress', 'foto_after']));
+            // Simpan langsung — data sudah terenkripsi dari Flutter
+            $report = MaintenanceReport::create(
+                $request->except(['foto_before', 'foto_progress', 'foto_after'])
+            );
 
-            // 3. Proses looping untuk menyimpan banyak foto ke tabel relasi
-            $categories = ['foto_before', 'foto_progress', 'foto_after'];
-
-            foreach ($categories as $category) {
+            // Simpan foto
+            foreach (['foto_before', 'foto_progress', 'foto_after'] as $category) {
                 if ($request->hasFile($category)) {
                     foreach ($request->file($category) as $file) {
                         $path = $file->store('reports', 'public');
-
                         ReportImage::create([
                             'maintenance_report_id' => $report->id,
                             'image_path'            => $path,
-                            'type'                  => str_replace('foto_', '', $category)
+                            'type'                  => str_replace('foto_', '', $category),
                         ]);
                     }
                 }
             }
 
-            // 4. KIRIM NOTIFIKASI KE TIM ADMINISTRASI VIA ONESIGNAL
-            $this->sendNotification($request->teknisi, $request->sto);
+            // Notifikasi pakai teks umum karena teknisi sudah terenkripsi
+            $this->sendNotification("Seorang Teknisi", "salah satu STO");
 
             return response()->json([
                 'success' => true,
-                'message' => 'Laporan dan bukti foto berhasil dikirim!',
-                'data'    => $report->load('images') 
+                'message' => 'Laporan berhasil dikirim!',
+                'data'    => $report->load('images'),
             ], 201);
 
-        } catch (\Illuminate\Validation\ValidationException $e) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Validasi gagal: Bukti foto belum lengkap.',
-                'errors'  => $e->errors()
-            ], 422);
         } catch (\Exception $e) {
             return response()->json([
                 'success' => false,
-                'message' => 'Gagal menyimpan laporan: ' . $e->getMessage()
+                'message' => 'Gagal menyimpan laporan: ' . $e->getMessage(),
             ], 500);
         }
     }
 
-    /**
-     * Fungsi Helper untuk mengirim notifikasi OneSignal
-     */
-    private function sendNotification($teknisi, $sto)
-    {
-        $appId = "c5e1b4de-5fdf-406e-ab45-7bb5b47ac450";
-        $restApiKey = "os_v2_app_yxq3jxs735ag5k2fpo23i6wekckbhlnhbbcehfm23zeljvnikxrm3ytrs5fyvojekd3jsygalvfp62mefspwovvu7coaei2lgc42j2i";
-
-        try {
-            $response = Http::withHeaders([
-                'Authorization' => 'Basic ' . $restApiKey,
-                'Content-Type'  => 'application/json',
-                'accept'        => 'application/json',
-            ])->post('https://onesignal.com/api/v1/notifications', [
-                'app_id'   => $appId,
-                'filters'  => [
-                    ['field' => 'tag', 'key' => 'role', 'relation' => '=', 'value' => 'tim_administrasi']
-                ],
-                'headings' => ['en' => 'Laporan Maintenance Baru!'],
-                'contents' => ['en' => "Teknisi $teknisi baru saja mengirim laporan pemeliharaan di STO $sto."],
-            ]);
-
-            if (!$response->successful()) {
-                Log::error('OneSignal Notification Error: ' . $response->body());
-            }
-        } catch (\Exception $e) {
-            Log::error('OneSignal Exception: ' . $e->getMessage());
-        }
-    }
+    // ====================================================================
+    // INDEX: AMBIL SEMUA LAPORAN — DATA DIDEKRIPSI SEBELUM DIKIRIM KE FLUTTER
+    // INILAH YANG DIPERBAIKI: transformDecryptedReport() sekarang aktif dipanggil
+    // ====================================================================
 
     public function index()
     {
         $reports = MaintenanceReport::with('images')->orderBy('id', 'desc')->get();
+
+        // PERBAIKAN UTAMA: Dekripsi setiap field sebelum dikirim ke Flutter
+        $reports->transform(function ($report) {
+            return $this->transformDecryptedReport($report);
+        });
+
         return response()->json(['status' => 'success', 'data' => $reports], 200);
     }
 
     // ====================================================================
-    // FITUR: ASSIGN TEKNISI MANUAL DAN GET HISTORY
+    // GET HISTORY: RIWAYAT BERDASARKAN USER (PELAPOR / TEKNISI YANG DIUTUS)
     // ====================================================================
 
-    /**
-     * Endpoint untuk Admin mengutus/assign teknisi secara manual (jika diperlukan)
-     */
-    public function assignTechnicians(Request $request, $id)
-    {
-        $report = MaintenanceReport::find($id);
-        if (!$report) {
-            return response()->json(['success' => false, 'message' => 'Data laporan tidak ditemukan'], 404);
-        }
-
-        $request->validate([
-            'assigned_technicians' => 'required|array' 
-        ]);
-
-        $report->assigned_technicians = $request->assigned_technicians;
-        $report->status = 'OPEN';
-        $report->save();
-
-        return response()->json([
-            'success' => true, 
-            'message' => 'Teknisi berhasil ditugaskan dan tiket sekarang OPEN.', 
-            'data' => $report
-        ], 200);
-    }
-
-    /**
-     * Endpoint untuk mengambil history khusus (Status CLOSE)
-     * Hanya muncul untuk pelapor awal atau teknisi yang ter-assign
-     */
     public function getHistory($userId)
     {
         $reports = MaintenanceReport::with('images')
-            ->where('status', 'CLOSE')
+            ->whereIn('status', ['PENDING', 'OPEN', 'CLOSE'])
             ->where(function ($query) use ($userId) {
-                // User adalah si pelapor
-                $query->where('user_id', $userId) 
-                      // ATAU User adalah teknisi yang ditugaskan (pencarian di array JSON)
-                      ->orWhereJsonContains('assigned_technicians', (int)$userId) 
-                      ->orWhereJsonContains('assigned_technicians', (string)$userId);
+                $query->where('user_id', $userId)
+                      ->orWhereJsonContains('assigned_technicians', (int) $userId)
+                      ->orWhereJsonContains('assigned_technicians', (string) $userId);
             })
             ->orderBy('updated_at', 'desc')
             ->get();
@@ -176,34 +235,63 @@ class MaintenanceController extends Controller
             return response()->json([
                 'success' => true,
                 'message' => 'Belum ada riwayat pekerjaan.',
-                'data' => []
+                'data'    => [],
             ], 200);
         }
+
+        $reports->transform(function ($report) {
+            return $this->transformDecryptedReport($report);
+        });
 
         return response()->json([
             'success' => true,
             'message' => 'Berhasil mengambil data riwayat.',
-            'data' => $reports
+            'data'    => $reports,
         ], 200);
     }
 
     // ====================================================================
-    // UPDATE DATA, STATUS (DENGAN ASSIGN OTOMATIS), DAN FOTO
+    // ASSIGN TEKNISI MANUAL (OLEH ADMIN)
+    // ====================================================================
+
+    public function assignTechnicians(Request $request, $id)
+    {
+        $report = MaintenanceReport::find($id);
+        if (!$report) {
+            return response()->json(['success' => false, 'message' => 'Data laporan tidak ditemukan'], 404);
+        }
+
+        $request->validate(['assigned_technicians' => 'required|array']);
+
+        $report->assigned_technicians = $request->assigned_technicians;
+        $report->status = 'OPEN';
+        $report->save();
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Teknisi berhasil ditugaskan dan tiket sekarang OPEN.',
+            'data'    => $report,
+        ], 200);
+    }
+
+    // ====================================================================
+    // UPDATE DATA LAPORAN
     // ====================================================================
 
     public function updateData(Request $request, $id)
     {
         $report = MaintenanceReport::find($id);
-        if (!$report) return response()->json(['success' => false, 'message' => 'Data tidak ditemukan'], 404);
+        if (!$report) {
+            return response()->json(['success' => false, 'message' => 'Data tidak ditemukan'], 404);
+        }
 
         $dataToUpdate = $request->except(['_method', 'evidence_material', 'evidence_ukur', 'evidence_pendukung']);
-        $files = ['evidence_material', 'evidence_ukur', 'evidence_pendukung'];
-        
-        foreach ($files as $field) {
+
+        foreach (['evidence_material', 'evidence_ukur', 'evidence_pendukung'] as $field) {
             if ($request->hasFile($field)) {
-                $file = $request->file($field);
+                $file     = $request->file($field);
                 $filename = 'MAINT-' . $id . '_' . ucfirst(str_replace('evidence_', '', $field)) . '_' . $file->getClientOriginalName();
-                $path = $file->storeAs('evidences', $filename, 'public');
+                $path     = $file->storeAs('evidences', $filename, 'public');
                 $dataToUpdate[$field] = $path;
             }
         }
@@ -212,9 +300,10 @@ class MaintenanceController extends Controller
         return response()->json(['success' => true, 'data' => $report], 200);
     }
 
-    /**
-     * Update Status Laporan (Termasuk auto-assign teknisi saat status OPEN)
-     */
+    // ====================================================================
+    // UPDATE STATUS (TERMASUK AUTO-ASSIGN TEKNISI SAAT STATUS OPEN)
+    // ====================================================================
+
     public function updateStatus(Request $request, $id)
     {
         $report = MaintenanceReport::find($id);
@@ -222,23 +311,17 @@ class MaintenanceController extends Controller
             return response()->json(['message' => 'Data tidak ditemukan'], 404);
         }
 
-        $newStatus = $request->status;
+        $newStatus    = $request->status;
         $report->status = $newStatus;
 
-        // ========================================================
-        // LOGIKA OTOMATIS: JIKA ADMIN VERIFIKASI (STATUS -> OPEN)
-        // ========================================================
         if ($newStatus === 'OPEN') {
-            
-            // Sistem otomatis mencari user dengan role Pengguna Lapangan
             $technicians = \App\Models\User::where('role', 'Pengguna Lapangan')
-                // ->where('sto', $report->sto) // Hilangkan komentar (//) di awal baris ini jika ingin memfilter teknisi berdasarkan STO yang sama dengan laporan
-                ->inRandomOrder() 
-                ->take(5) // Batas maksimal teknisi yang diutus otomatis (misal: 5 orang)
-                ->pluck('id') 
-                ->toArray(); 
+                // ->where('sto', $report->sto) // Aktifkan untuk filter per STO
+                ->inRandomOrder()
+                ->take(5)
+                ->pluck('id')
+                ->toArray();
 
-            // Masukkan ID teknisi terpilih ke kolom assigned_technicians
             $report->assigned_technicians = $technicians;
         }
 
@@ -248,67 +331,71 @@ class MaintenanceController extends Controller
             'success'  => true,
             'message'  => 'Status diperbarui. Jika OPEN, teknisi telah diutus otomatis oleh sistem.',
             'data'     => $report,
-            'assigned' => $report->assigned_technicians ?? [] // Menampilkan ID siapa saja yang diutus
+            'assigned' => $report->assigned_technicians ?? [],
         ], 200);
     }
+
+    // ====================================================================
+    // TAMBAH FOTO SUSULAN
+    // ====================================================================
 
     public function addPhotos(Request $request, $id)
     {
         $report = MaintenanceReport::find($id);
-        if (!$report) return response()->json(['success' => false, 'message' => 'Data tidak ditemukan'], 404);
+        if (!$report) {
+            return response()->json(['success' => false, 'message' => 'Data tidak ditemukan'], 404);
+        }
 
-        $categories = ['foto_before', 'foto_progress', 'foto_after'];
         $uploadedCount = 0;
-        
-        foreach ($categories as $category) {
+
+        foreach (['foto_before', 'foto_progress', 'foto_after'] as $category) {
             if ($request->hasFile($category)) {
                 foreach ($request->file($category) as $file) {
                     $path = $file->store('reports', 'public');
                     ReportImage::create([
                         'maintenance_report_id' => $report->id,
                         'image_path'            => $path,
-                        'type'                  => str_replace('foto_', '', $category) 
+                        'type'                  => str_replace('foto_', '', $category),
                     ]);
                     $uploadedCount++;
                 }
             }
         }
 
-        return $uploadedCount == 0 
+        return $uploadedCount === 0
             ? response()->json(['success' => false, 'message' => 'Tidak ada foto'], 400)
             : response()->json(['success' => true, 'message' => "$uploadedCount foto berhasil ditambahkan!", 'data' => $report->load('images')], 200);
     }
 
+    // ====================================================================
+    // DOWNLOAD FOTO ZIP
+    // ====================================================================
+
     public function downloadPhotosZip($id)
     {
         try {
-            $report = \App\Models\MaintenanceReport::with('images')->findOrFail($id);
-            
+            $report = MaintenanceReport::with('images')->findOrFail($id);
+
             if ($report->images->isEmpty()) {
                 return response()->json(['message' => 'Tidak ada foto untuk diunduh'], 404);
             }
 
-            $zip = new \ZipArchive();
+            $zip         = new \ZipArchive();
             $zipFileName = 'Bukti_Foto_MAINT-' . str_pad($id, 3, '0', STR_PAD_LEFT) . '.zip';
-            $zipPath = storage_path('app/public/' . $zipFileName);
+            $zipPath     = storage_path('app/public/' . $zipFileName);
 
-            if ($zip->open($zipPath, \ZipArchive::CREATE | \ZipArchive::OVERWRITE) === TRUE) {
-                
+            if ($zip->open($zipPath, \ZipArchive::CREATE | \ZipArchive::OVERWRITE) === true) {
                 $baseDir = 'Bukti_MAINT_' . str_pad($id, 3, '0', STR_PAD_LEFT) . '/';
-                
                 $zip->addEmptyDir($baseDir . 'Before');
                 $zip->addEmptyDir($baseDir . 'Progress');
                 $zip->addEmptyDir($baseDir . 'After');
 
                 foreach ($report->images as $index => $img) {
                     $filePath = storage_path('app/public/' . $img->image_path);
-                    
                     if (file_exists($filePath)) {
-                        $type = ucfirst(strtolower($img->type)); 
-                        $ext = pathinfo($filePath, PATHINFO_EXTENSION);
-                        
+                        $type          = ucfirst(strtolower($img->type));
+                        $ext           = pathinfo($filePath, PATHINFO_EXTENSION);
                         $fileNameInZip = $baseDir . $type . '/' . $type . '_' . ($index + 1) . '.' . $ext;
-                        
                         $zip->addFile($filePath, $fileNameInZip);
                     }
                 }
@@ -322,13 +409,18 @@ class MaintenanceController extends Controller
         }
     }
 
+    // ====================================================================
+    // EXPORT WORD
+    // ====================================================================
+
     public function exportWord($id)
     {
         try {
-            $report = \App\Models\MaintenanceReport::with('images')->findOrFail($id);
+            // Ambil data mentah dulu, lalu dekripsi untuk keperluan dokumen Word
+            $report = MaintenanceReport::with('images')->findOrFail($id);
+            $report = $this->transformDecryptedReport($report);
 
             $phpWord = new \PhpOffice\PhpWord\PhpWord();
-
             $phpWord->setDefaultFontName('Arial');
             $phpWord->setDefaultFontSize(11);
             $phpWord->setDefaultParagraphStyle([
@@ -353,7 +445,7 @@ class MaintenanceController extends Controller
             $paraStyle   = ['spaceBefore' => 0, 'spaceAfter' => 0, 'spacing' => 0];
             $centerPara  = ['alignment' => \PhpOffice\PhpWord\SimpleType\Jc::CENTER, 'spaceBefore' => 0, 'spaceAfter' => 0, 'spacing' => 0];
             $lineStyle   = ['spaceBefore' => 0, 'spaceAfter' => 0, 'spacing' => 0, 'borderBottomSize' => 12, 'borderBottomColor' => '000000'];
-            
+
             $logoPath = public_path('images/logo-telkom.png');
             if (file_exists($logoPath)) {
                 $section->addImage($logoPath, [
@@ -364,31 +456,21 @@ class MaintenanceController extends Controller
                 ]);
             }
 
-            $section->addText(
-                "EVIDENCE DOKUMENTASI PEKERJAAN",
-                ['name' => 'Arial', 'size' => 14, 'bold' => true],
-                $centerPara
-            );
-
+            $section->addText("EVIDENCE DOKUMENTASI PEKERJAAN", ['name' => 'Arial', 'size' => 14, 'bold' => true], $centerPara);
             $section->addText('', $normalStyle, $lineStyle);
 
-            $addInfoRow = function($key, $value, $withBorderBottom = false) use ($section, $boldStyle, $normalStyle, $paraStyle) {
+            $addInfoRow = function ($key, $value, $withBorderBottom = false) use ($section, $boldStyle, $normalStyle, $paraStyle) {
                 $rowPara = array_merge($paraStyle, [
                     'tabs' => [
                         new \PhpOffice\PhpWord\Style\Tab('left', 3500),
                         new \PhpOffice\PhpWord\Style\Tab('left', 3800),
                     ],
                 ]);
-                
                 if ($withBorderBottom) {
-                    $rowPara = array_merge($rowPara, [
-                        'borderBottomSize'  => 12,
-                        'borderBottomColor' => '000000',
-                    ]);
+                    $rowPara = array_merge($rowPara, ['borderBottomSize' => 12, 'borderBottomColor' => '000000']);
                 }
-                
                 $textRun = $section->addTextRun($rowPara);
-                $textRun->addText($key,    $boldStyle);
+                $textRun->addText($key, $boldStyle);
                 $textRun->addText("\t:\t", $boldStyle);
                 $textRun->addText(strtoupper($value ?? ''), $boldStyle);
             };
@@ -406,31 +488,15 @@ class MaintenanceController extends Controller
             $imgWidth  = 140;
             $imgHeight = 157;
 
-            $insertImages = function($title, $type) use ($section, $report, $boldStyle, $normalStyle, $paraStyle, $centerPara, $colWidth, $imgWidth, $imgHeight) {
-
+            $insertImages = function ($title, $type) use ($section, $report, $boldStyle, $normalStyle, $paraStyle, $centerPara, $colWidth, $imgWidth, $imgHeight) {
                 $section->addText($title, $boldStyle, $centerPara);
-
-                $images = $report->images->where('type', $type)->values();
-
+                $images     = $report->images->where('type', $type)->values();
                 $cellBorder = [
-                    'borderTopSize'     => 6,
-                    'borderBottomSize'  => 6,
-                    'borderLeftSize'    => 6,
-                    'borderRightSize'   => 6,
-                    'borderTopColor'    => '000000',
-                    'borderBottomColor' => '000000',
-                    'borderLeftColor'   => '000000',
-                    'borderRightColor'  => '000000',
-                    'valign'            => 'center',
+                    'borderTopSize' => 6, 'borderBottomSize' => 6, 'borderLeftSize' => 6, 'borderRightSize' => 6,
+                    'borderTopColor' => '000000', 'borderBottomColor' => '000000', 'borderLeftColor' => '000000', 'borderRightColor' => '000000',
+                    'valign' => 'center',
                 ];
-
-                $tbl = $section->addTable([
-                    'borderSize'  => 6,
-                    'borderColor' => '000000',
-                    'cellMargin'  => 0,
-                    'alignment'   => \PhpOffice\PhpWord\SimpleType\JcTable::CENTER,
-                ]);
-
+                $tbl = $section->addTable(['borderSize' => 6, 'borderColor' => '000000', 'cellMargin' => 0, 'alignment' => \PhpOffice\PhpWord\SimpleType\JcTable::CENTER]);
                 $tbl->addRow(200);
                 $tbl->addCell($colWidth, $cellBorder)->addText('', $normalStyle, $paraStyle);
                 $tbl->addCell($colWidth, $cellBorder)->addText('', $normalStyle, $paraStyle);
@@ -439,7 +505,7 @@ class MaintenanceController extends Controller
                 $totalImages = count($images);
                 $totalCells  = max(3, $totalImages);
                 if ($totalCells % 3 !== 0) {
-                    $totalCells = $totalCells + (3 - ($totalCells % 3));
+                    $totalCells += 3 - ($totalCells % 3);
                 }
 
                 $imgIndex = 0;
@@ -451,12 +517,7 @@ class MaintenanceController extends Controller
                             $img  = $images[$imgIndex];
                             $path = storage_path('app/public/' . $img->image_path);
                             if (file_exists($path)) {
-                                $cell->addImage($path, [
-                                    'width'     => $imgWidth,
-                                    'height'    => $imgHeight,
-                                    'ratio'     => false,
-                                    'alignment' => \PhpOffice\PhpWord\SimpleType\Jc::CENTER,
-                                ]);
+                                $cell->addImage($path, ['width' => $imgWidth, 'height' => $imgHeight, 'ratio' => false, 'alignment' => \PhpOffice\PhpWord\SimpleType\Jc::CENTER]);
                             } else {
                                 $cell->addText("[Tidak Ditemukan]", $normalStyle, $centerPara);
                             }
@@ -466,7 +527,6 @@ class MaintenanceController extends Controller
                         $imgIndex++;
                     }
                 }
-
                 $section->addTextBreak(1, $normalStyle, $paraStyle);
             };
 
@@ -491,12 +551,7 @@ class MaintenanceController extends Controller
             $section->addText(($report->latitude ?? "-") . ", " . ($report->longitude ?? "-"), $normalStyle, $paraStyle);
             $section->addTextBreak(2, $normalStyle, $paraStyle);
 
-            $phpWord->addTableStyle('TTDTable', [
-                'cellMarginTop'    => 0,
-                'cellMarginBottom' => 0,
-                'cellMarginLeft'   => 100,
-                'cellMarginRight'  => 100,
-            ]);
+            $phpWord->addTableStyle('TTDTable', ['cellMarginTop' => 0, 'cellMarginBottom' => 0, 'cellMarginLeft' => 100, 'cellMarginRight' => 100]);
             $tableTTD = $section->addTable('TTDTable');
             $tableTTD->addRow();
 
@@ -524,6 +579,37 @@ class MaintenanceController extends Controller
 
         } catch (\Exception $e) {
             return response()->json(['message' => 'Gagal membuat file Word: ' . $e->getMessage()], 500);
+        }
+    }
+
+    // ====================================================================
+    // HELPER NOTIFIKASI ONESIGNAL
+    // ====================================================================
+
+    private function sendNotification(string $teknisi, string $sto): void
+    {
+        $appId      = "c5e1b4de-5fdf-406e-ab45-7bb5b47ac450";
+        $restApiKey = "os_v2_app_yxq3jxs735ag5k2fpo23i6wekckbhlnhbbcehfm23zeljvnikxrm3ytrs5fyvojekd3jsygalvfp62mefspwovvu7coaei2lgc42j2i";
+
+        try {
+            $response = Http::withHeaders([
+                'Authorization' => 'Basic ' . $restApiKey,
+                'Content-Type'  => 'application/json',
+                'accept'        => 'application/json',
+            ])->post('https://onesignal.com/api/v1/notifications', [
+                'app_id'   => $appId,
+                'filters'  => [
+                    ['field' => 'tag', 'key' => 'role', 'relation' => '=', 'value' => 'tim_administrasi'],
+                ],
+                'headings' => ['en' => 'Laporan Maintenance Baru!'],
+                'contents' => ['en' => "Teknisi $teknisi baru saja mengirim laporan pemeliharaan di STO $sto."],
+            ]);
+
+            if (!$response->successful()) {
+                Log::error('OneSignal Notification Error: ' . $response->body());
+            }
+        } catch (\Exception $e) {
+            Log::error('OneSignal Exception: ' . $e->getMessage());
         }
     }
 }

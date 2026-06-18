@@ -15,31 +15,34 @@ return new class extends Migration
     {
         Schema::create('maintenance_reports', function (Blueprint $table) {
             $table->id();
-            $table->string('user_id');
-            $table->string('area');
-            $table->string('district');
-            $table->string('witel');
-            $table->string('sto');
-            $table->string('mitra_pelaksana');
-            $table->string('kategori_kegiatan');
-            $table->text('uraian_pekerjaan');
-            $table->string('teknisi');
+            $table->string('user_id'); // Tetap string (Tidak dienkripsi)
             
-            // Kolom lokasi
-            $table->string('latitude')->nullable();
-            $table->string('longitude')->nullable();
-            $table->text('lokasi_pekerjaan')->nullable();
+            // --- KOLOM DI BAWAH INI UBAH JADI LONGTEXT KARENA DIENKRIPSI ---
+            $table->longText('area');
+            $table->longText('district');
+            $table->longText('witel');
+            $table->longText('sto');
+            $table->longText('mitra_pelaksana');
+            $table->longText('kategori_kegiatan');
+            $table->longText('uraian_pekerjaan');
+            $table->longText('teknisi');
+            
+            // Kolom lokasi juga dienkripsi
+            $table->longText('latitude')->nullable();
+            $table->longText('longitude')->nullable();
+            $table->longText('lokasi_pekerjaan')->nullable();
+            // -------------------------------------------------------------
 
-            $table->string('status')->default('PENDING');
+            $table->string('status')->default('PENDING'); // Tetap string
 
-            // Bukti Evidence
+            // Bukti Evidence (Tetap string karena isinya path gambar .jpg/.png)
             $table->string('evidence_material')->nullable();
             $table->string('evidence_ukur')->nullable();
             $table->string('evidence_pendukung')->nullable();
             
             $table->timestamps();
         });
-    } // <-- Cukup satu kurung kurawal tutup di sini
+    }
 
     /**
      * Reverse the migrations.
