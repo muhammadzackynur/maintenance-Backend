@@ -36,4 +36,6 @@ Route::post('/login', [AuthController::class, 'login']);
 
 Route::middleware('auth:sanctum')->get('/user', function (Request $request) {
     return $request->user();
+    Route::post('/user/update-photo', [UserController::class, 'updatePhoto']);
+    Route::delete('/users/{id}', [UserController::class, 'destroy']);
 });

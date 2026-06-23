@@ -3,8 +3,9 @@
 namespace App\Http\Controllers;
 
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Storage;
 use App\Models\User; 
-use App\Models\MaintenanceReport; // Tambahkan import model laporan
+use App\Models\MaintenanceReport;
 
 class UserController extends Controller
 {
@@ -61,6 +62,66 @@ class UserController extends Controller
                 'total_closed' => $totalClosed,
                 'current_streak' => $currentStreak
             ]
+        ], 200);
+    }
+
+    /**
+     * Memperbarui Foto Profil Pengguna
+     */
+    public function updatePhoto(Request $request, $id)
+    {
+        $request->validate([
+            'photo' => 'required|image|mimes:jpeg,png,jpg|max:2048',
+        ]);
+
+        $user = User::find($id);
+        if (!$user) {
+            return response()->json(['success' => false, 'message' => 'User tidak ditemukan'], 404);
+        }
+
+        if ($request->hasFile('photo')) {
+            // Hapus foto lama dari storage jika ada
+            if ($user->photo && Storage::disk('public')->exists($user->photo)) {
+                Storage::disk('public')->delete($user->photo);
+            }
+
+            $path = $request->file('photo')->store('profile_photos', 'public');
+            $user->photo = $path;
+            $user->save();
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Foto profil berhasil diperbarui',
+                'photo_url' => asset('storage/' . $path)
+            ], 200);
+        }
+
+        return response()->json(['success' => false, 'message' => 'File foto tidak unggah'], 400);
+    }
+
+    /**
+     * Menghapus Pengguna Secara Permanen
+     */
+    public function destroy(Request $request, $id)
+    {
+        $targetUser = User::find($id);
+        if (!$targetUser) {
+            return response()->json(['success' => false, 'message' => 'User tidak ditemukan'], 404);
+        }
+
+        // Bersihkan file foto profil di storage
+        if ($targetUser->photo && Storage::disk('public')->exists($targetUser->photo)) {
+            Storage::disk('public')->delete($targetUser->photo);
+        }
+
+        // Hapus semua laporan milik user tersebut agar tidak menjadi orphan data
+        MaintenanceReport::where('user_id', $targetUser->user_id)->delete();
+
+        $targetUser->delete();
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Pengguna berhasil dihapus permanen.'
         ], 200);
     }
 }
