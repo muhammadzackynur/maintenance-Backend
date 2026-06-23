@@ -15,7 +15,8 @@ class User extends Authenticatable
         'user_id',
         'name',
         'role',
-        'biometric_hash', // Kolom wajib untuk menyimpan titik wajah
+        'biometric_hash',
+        'photo', // Kolom wajib untuk menyimpan titik wajah
     ];
     
     protected $hidden = [
