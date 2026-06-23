@@ -28,14 +28,22 @@ Route::put('/maintenance/reports/{id}', [MaintenanceController::class, 'updateDa
 Route::get('/maintenance/reports', [MaintenanceController::class, 'index']);
 Route::post('/maintenance/report', [MaintenanceController::class, 'store']);
 
-// Route Auth & Login
+// Route Auth & Login (Public / Tidak butuh token)
 Route::post('/register-fingerprint', [AuthController::class, 'registerFingerprint']);
 Route::post('/login-fingerprint', [AuthController::class, 'loginFingerprint']);
 Route::post('/users/register', [AuthController::class, 'register']);
 Route::post('/login', [AuthController::class, 'login']);
 
-Route::middleware('auth:sanctum')->get('/user', function (Request $request) {
-    return $request->user();
-    Route::post('/user/update-photo', [UserController::class, 'updatePhoto']);
+// PERBAIKAN: Gunakan Route::group() untuk rute-rute yang wajib login (Protected Routes)
+Route::middleware('auth:sanctum')->group(function () {
+    Route::get('/user', function (Request $request) {
+        return $request->user();
+    });
+
+    // =========================================================================
+    // SUDAH DIPERBAIKI: Sekarang bisa menerima /user/update-photo/1028
+    // =========================================================================
+    Route::post('/user/update-photo/{id?}', [UserController::class, 'updatePhoto']);
+    
     Route::delete('/users/{id}', [UserController::class, 'destroy']);
 });

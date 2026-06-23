@@ -28,7 +28,18 @@ class AuthController extends Controller {
                 return response()->json(['success' => false, 'message' => "Login Gagal. Cek ID dan Role."], 401);
             }
 
-            return response()->json(['success' => true, 'message' => 'Login Berhasil', 'user' => $user], 200);
+            // =================================================================
+            // SUNTIKAN SAKTI 1: GENERATE TOKEN SANCTUM DISINI!
+            // =================================================================
+            $token = $user->createToken('auth_token')->plainTextToken;
+
+            return response()->json([
+                'success' => true, 
+                'message' => 'Login Berhasil', 
+                'user'    => $user,
+                'token'   => $token  // <--- KARCIS PARKIR RESMI DIBERIKAN!
+            ], 200);
+
         } catch (Exception $e) {
             Log::error("Login Manual Error: " . $e->getMessage());
             return response()->json(['success' => false, 'message' => 'Terjadi kesalahan sistem.'], 500);
@@ -74,12 +85,8 @@ class AuthController extends Controller {
 
             $enginePath = base_path('engine.py');
 
-            // =====================================================================================
-            // LOGIKA BARU: CEK APAKAH WAJAH SUDAH PERNAH DIDAFTARKAN KE ID INI
-            // =====================================================================================
             if (!empty($user->biometric_hash)) {
                 
-                // Jika sudah ada, JANGAN DITIMPA. Lakukan pencocokan (Verifikasi)
                 $tempPath = $request->file('fingerprint_image')->store('temp');
                 $fullTempPath = storage_path('app/' . $tempPath);
 
@@ -93,16 +100,12 @@ class AuthController extends Controller {
                 if (file_exists($hashPath)) @unlink($hashPath);
 
                 if ($matchResult === "100") {
-                    // Wajah COCOK dengan yang terdaftar pertama kali (Biarkan lanjut login)
                     return response()->json(['success' => true, 'message' => 'Wajah dikenali. Melanjutkan...']);
                 } else {
-                    // Wajah BERBEDA, ini orang lain yang mencoba memakai ID yang sama
                     return response()->json(['success' => false, 'message' => 'Kredensial tidak valid'], 401);
                 }
             }
-            // =====================================================================================
 
-            // JIKA BELUM ADA WAJAH (PENDAFTARAN PERTAMA), LANJUTKAN SIMPAN KE DATABASE
             // Simpan foto di storage/app/public/faces
             $namaFile = $user->user_id . '.jpg';
             $path = $request->file('fingerprint_image')->storeAs('faces', $namaFile, 'public');
@@ -120,7 +123,7 @@ class AuthController extends Controller {
                 return response()->json(['success' => false, 'message' => 'AI Gagal mendeteksi wajah.']);
             }
 
-            // 3. UPDATE DATABASE (Paksa simpan ke kolom biometric_hash)
+            // 3. UPDATE DATABASE
             $updated = User::where('user_id', $user->user_id)->update([
                 'biometric_hash' => $hashResult
             ]);
@@ -165,7 +168,19 @@ class AuthController extends Controller {
             if (file_exists($hashPath)) @unlink($hashPath);
 
             if ($matchResult === "100") {
-                return response()->json(['success' => true, 'message' => 'Wajah Cocok!', 'user' => $user], 200);
+                
+                // =============================================================
+                // SUNTIKAN SAKTI 2: GENERATE TOKEN UNTUK SCAN WAJAH!
+                // =============================================================
+                $token = $user->createToken('auth_token')->plainTextToken;
+
+                return response()->json([
+                    'success' => true, 
+                    'message' => 'Wajah Cocok!', 
+                    'user'    => $user,
+                    'token'   => $token // <--- INI JUGA!
+                ], 200);
+
             } else {
                 return response()->json(['success' => false, 'message' => 'Wajah Tidak Dikenali.'], 401);
             }

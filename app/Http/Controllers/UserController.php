@@ -2,10 +2,11 @@
 
 namespace App\Http\Controllers;
 
-use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Storage;
 use App\Models\User; 
+use Illuminate\Http\Request;
 use App\Models\MaintenanceReport;
+use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\Storage;
 
 class UserController extends Controller
 {
@@ -14,7 +15,6 @@ class UserController extends Controller
      */
     public function index()
     {
-        // Mengambil semua user dari database, diurutkan berdasarkan user_id (abjad)
         $users = User::orderBy('user_id', 'asc')->get();
         
         return response()->json([
@@ -37,7 +37,6 @@ class UserController extends Controller
                                         ->count();
 
         // 3. Pekerja Tanpa Cacat: Hitung streak beruntun status CLOSE dari laporan terbaru
-        // Mengambil data diurutkan dari yang paling baru
         $reports = MaintenanceReport::where('user_id', $userId)
                                     ->orderBy('created_at', 'desc')
                                     ->get();
@@ -47,10 +46,8 @@ class UserController extends Controller
             if ($report->status === 'CLOSE') {
                 $currentStreak++;
             } elseif ($report->status === 'OPEN') {
-                // Jika masih OPEN, kita abaikan (tidak memutus streak karena belum selesai)
                 continue; 
             } else {
-                // Jika statusnya DITOLAK / REVISI / selain OPEN dan CLOSE, streak putus
                 break;
             }
         }
@@ -67,36 +64,43 @@ class UserController extends Controller
 
     /**
      * Memperbarui Foto Profil Pengguna
+     * Jika $id tidak dikirim, maka akan otomatis memperbarui user yang sedang login
      */
-    public function updatePhoto(Request $request, $id)
+    public function updatePhoto(Request $request, $id = null)
     {
+        // Validasi file agar hanya menerima gambar
         $request->validate([
             'photo' => 'required|image|mimes:jpeg,png,jpg|max:2048',
         ]);
 
-        $user = User::find($id);
+        $targetId = $id ?? Auth::id();
+        $user = User::find($targetId);
+
         if (!$user) {
             return response()->json(['success' => false, 'message' => 'User tidak ditemukan'], 404);
         }
 
         if ($request->hasFile('photo')) {
-            // Hapus foto lama dari storage jika ada
+            // Hapus foto lama dari storage jika ada (mencegah storage penuh)
             if ($user->photo && Storage::disk('public')->exists($user->photo)) {
                 Storage::disk('public')->delete($user->photo);
             }
 
+            // Simpan foto baru ke folder 'profile_photos' di disk public
             $path = $request->file('photo')->store('profile_photos', 'public');
+            
             $user->photo = $path;
             $user->save();
 
             return response()->json([
                 'success' => true,
                 'message' => 'Foto profil berhasil diperbarui',
+                // Menggunakan asset untuk generate URL lengkap
                 'photo_url' => asset('storage/' . $path)
             ], 200);
         }
 
-        return response()->json(['success' => false, 'message' => 'File foto tidak unggah'], 400);
+        return response()->json(['success' => false, 'message' => 'File foto tidak terunggah'], 400);
     }
 
     /**
@@ -105,8 +109,17 @@ class UserController extends Controller
     public function destroy(Request $request, $id)
     {
         $targetUser = User::find($id);
+
         if (!$targetUser) {
             return response()->json(['success' => false, 'message' => 'User tidak ditemukan'], 404);
+        }
+
+        // Proteksi: Admin tidak dapat menghapus akunnya sendiri
+        if (Auth::id() == $id) {
+            return response()->json([
+                'success' => false, 
+                'message' => 'Anda tidak dapat menghapus akun Anda sendiri.'
+            ], 403);
         }
 
         // Bersihkan file foto profil di storage
@@ -114,8 +127,9 @@ class UserController extends Controller
             Storage::disk('public')->delete($targetUser->photo);
         }
 
-        // Hapus semua laporan milik user tersebut agar tidak menjadi orphan data
-        MaintenanceReport::where('user_id', $targetUser->user_id)->delete();
+        // Hapus data terkait (Maintenance Report)
+        $userIdentifier = $targetUser->user_id ?? $targetUser->id;
+        MaintenanceReport::where('user_id', $userIdentifier)->delete();
 
         $targetUser->delete();
 
