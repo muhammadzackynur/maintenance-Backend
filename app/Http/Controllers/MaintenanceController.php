@@ -12,121 +12,81 @@ use Illuminate\Support\Facades\Log;
 
 class MaintenanceController extends Controller
 {
-    // ====================================================================
-    // KUNCI PRIVATE SERVER UNTUK DEKRIPSI ECC (X25519 + AES-GCM)
-    // Harus sama dengan pasangan dari public key yang ada di Flutter
-    // Simpan nilai ini di .env agar lebih aman:
-    //   ECC_PRIVATE_KEY=<base64_private_key_anda>
-    // ====================================================================
     private string $serverPrivateKeyBase64 = 'jC28mahRvw+YwdmBX3r8SU9DXyLmzb9NWc7rFnqAk+4=';
 
-    // ====================================================================
-    // HELPER: DEKRIPSI SATU FIELD YANG DIENKRIPSI FLUTTER (ECC + AES-GCM)
-    // ====================================================================
-
-    /**
-     * Mendekripsi satu nilai yang sudah dienkripsi oleh EccHelper Flutter.
-     * Format payload (setelah base64 decode + json decode):
-     *   { client_pub_key, nonce, mac, ciphertext }
-     */
     private function decryptField(?string $encryptedValue): string
-{
-    if (empty($encryptedValue)) {
-        return '';
-    }
+    {
+        if (empty($encryptedValue)) {
+            return '';
+        }
 
-    $start = microtime(true);
+        $start = microtime(true);
 
-    try {
+        try {
+            $json = base64_decode($encryptedValue);
+            $payload = json_decode($json, true);
 
-        $json = base64_decode($encryptedValue);
-        $payload = json_decode($json, true);
+            if (
+                !$payload ||
+                !isset(
+                    $payload['client_pub_key'],
+                    $payload['nonce'],
+                    $payload['mac'],
+                    $payload['ciphertext']
+                )
+            ) {
+                return $encryptedValue;
+            }
 
-        if (
-            !$payload ||
-            !isset(
-                $payload['client_pub_key'],
-                $payload['nonce'],
-                $payload['mac'],
-                $payload['ciphertext']
-            )
-        ) {
+            $clientPubKeyBytes = base64_decode($payload['client_pub_key']);
+            $nonce             = base64_decode($payload['nonce']);
+            $mac               = base64_decode($payload['mac']);
+            $ciphertext        = base64_decode($payload['ciphertext']);
+
+            $serverPrivKeyBytes = base64_decode($this->serverPrivateKeyBase64);
+
+            $sharedSecret = sodium_crypto_scalarmult(
+                $serverPrivKeyBytes,
+                $clientPubKeyBytes
+            );
+
+            if (!sodium_crypto_aead_aes256gcm_is_available()) {
+                $decrypted = openssl_decrypt(
+                    $ciphertext,
+                    'aes-256-gcm',
+                    $sharedSecret,
+                    OPENSSL_RAW_DATA,
+                    $nonce,
+                    $mac
+                );
+            } else {
+                $ciphertextWithTag = $ciphertext . $mac;
+                $decrypted = sodium_crypto_aead_aes256gcm_decrypt(
+                    $ciphertextWithTag,
+                    '',
+                    $nonce,
+                    $sharedSecret
+                );
+            }
+
+            $elapsedMs = round((microtime(true) - $start) * 1000, 3);
+            Log::info("ECC DECRYPT SUCCESS | Waktu: {$elapsedMs} ms");
+
+            return $decrypted ?: $encryptedValue;
+
+        } catch (\Throwable $e) {
+            $elapsedMs = round((microtime(true) - $start) * 1000, 3);
+            Log::error("ECC DECRYPT ERROR | Waktu: {$elapsedMs} ms | {$e->getMessage()}");
             return $encryptedValue;
         }
-
-        $clientPubKeyBytes = base64_decode($payload['client_pub_key']);
-        $nonce             = base64_decode($payload['nonce']);
-        $mac               = base64_decode($payload['mac']);
-        $ciphertext        = base64_decode($payload['ciphertext']);
-
-        $serverPrivKeyBytes = base64_decode($this->serverPrivateKeyBase64);
-
-        $sharedSecret = sodium_crypto_scalarmult(
-            $serverPrivKeyBytes,
-            $clientPubKeyBytes
-        );
-
-        if (!sodium_crypto_aead_aes256gcm_is_available()) {
-
-            $decrypted = openssl_decrypt(
-                $ciphertext,
-                'aes-256-gcm',
-                $sharedSecret,
-                OPENSSL_RAW_DATA,
-                $nonce,
-                $mac
-            );
-
-        } else {
-
-            $ciphertextWithTag = $ciphertext . $mac;
-
-            $decrypted = sodium_crypto_aead_aes256gcm_decrypt(
-                $ciphertextWithTag,
-                '',
-                $nonce,
-                $sharedSecret
-            );
-        }
-
-        // Hitung waktu dekripsi
-        $elapsedMs = round((microtime(true) - $start) * 1000, 3);
-
-        Log::info("ECC DECRYPT SUCCESS | Waktu: {$elapsedMs} ms");
-
-        return $decrypted ?: $encryptedValue;
-
-    } catch (\Throwable $e) {
-
-        $elapsedMs = round((microtime(true) - $start) * 1000, 3);
-
-        Log::error(
-            "ECC DECRYPT ERROR | Waktu: {$elapsedMs} ms | {$e->getMessage()}"
-        );
-
-        return $encryptedValue;
     }
-}
-
-    // ====================================================================
-    // HELPER: TRANSFORM SATU REPORT — DEKRIPSI SEMUA FIELD SENSITIF
-    // Dipanggil di index(), getHistory(), dan endpoint lain yang baca data
-    // ====================================================================
 
     private function transformDecryptedReport(MaintenanceReport $report): MaintenanceReport
     {
         $fieldsToDecrypt = [
-            'area',
-            'district',
-            'witel',
-            'sto',
-            'mitra_pelaksana',
-            'kategori_kegiatan',
-            'uraian_pekerjaan',
-            'teknisi',
-            'latitude',
-            'longitude',
-            'lokasi_pekerjaan',
+            'area', 'district', 'witel', 'sto', 'mitra_pelaksana',
+            'kategori_kegiatan', 'uraian_pekerjaan', 'teknisi',
+            'latitude', 'longitude', 'lokasi_pekerjaan',
         ];
 
         foreach ($fieldsToDecrypt as $field) {
@@ -137,10 +97,6 @@ class MaintenanceController extends Controller
 
         return $report;
     }
-
-    // ====================================================================
-    // STORE: SIMPAN LAPORAN BARU (DATA MASUK SUDAH TERENKRIPSI DARI FLUTTER)
-    // ====================================================================
 
     public function store(Request $request)
     {
@@ -162,12 +118,10 @@ class MaintenanceController extends Controller
                 'foto_before.*'     => 'image|max:5120',
             ]);
 
-            // Simpan langsung — data sudah terenkripsi dari Flutter
             $report = MaintenanceReport::create(
                 $request->except(['foto_before', 'foto_progress', 'foto_after'])
             );
 
-            // Simpan foto
             foreach (['foto_before', 'foto_progress', 'foto_after'] as $category) {
                 if ($request->hasFile($category)) {
                     foreach ($request->file($category) as $file) {
@@ -181,7 +135,6 @@ class MaintenanceController extends Controller
                 }
             }
 
-            // Notifikasi pakai teks umum karena teknisi sudah terenkripsi
             $this->sendNotification("Seorang Teknisi", "salah satu STO");
 
             return response()->json([
@@ -198,26 +151,16 @@ class MaintenanceController extends Controller
         }
     }
 
-    // ====================================================================
-    // INDEX: AMBIL SEMUA LAPORAN — DATA DIDEKRIPSI SEBELUM DIKIRIM KE FLUTTER
-    // INILAH YANG DIPERBAIKI: transformDecryptedReport() sekarang aktif dipanggil
-    // ====================================================================
-
     public function index()
     {
         $reports = MaintenanceReport::with('images')->orderBy('id', 'desc')->get();
 
-        // PERBAIKAN UTAMA: Dekripsi setiap field sebelum dikirim ke Flutter
         $reports->transform(function ($report) {
             return $this->transformDecryptedReport($report);
         });
 
         return response()->json(['status' => 'success', 'data' => $reports], 200);
     }
-
-    // ====================================================================
-    // GET HISTORY: RIWAYAT BERDASARKAN USER (PELAPOR / TEKNISI YANG DIUTUS)
-    // ====================================================================
 
     public function getHistory($userId)
     {
@@ -250,10 +193,6 @@ class MaintenanceController extends Controller
         ], 200);
     }
 
-    // ====================================================================
-    // ASSIGN TEKNISI MANUAL (OLEH ADMIN)
-    // ====================================================================
-
     public function assignTechnicians(Request $request, $id)
     {
         $report = MaintenanceReport::find($id);
@@ -273,10 +212,6 @@ class MaintenanceController extends Controller
             'data'    => $report,
         ], 200);
     }
-
-    // ====================================================================
-    // UPDATE DATA LAPORAN
-    // ====================================================================
 
     public function updateData(Request $request, $id)
     {
@@ -300,10 +235,6 @@ class MaintenanceController extends Controller
         return response()->json(['success' => true, 'data' => $report], 200);
     }
 
-    // ====================================================================
-    // UPDATE STATUS (TERMASUK AUTO-ASSIGN TEKNISI SAAT STATUS OPEN)
-    // ====================================================================
-
     public function updateStatus(Request $request, $id)
     {
         $report = MaintenanceReport::find($id);
@@ -316,7 +247,6 @@ class MaintenanceController extends Controller
 
         if ($newStatus === 'OPEN') {
             $technicians = \App\Models\User::where('role', 'Pengguna Lapangan')
-                // ->where('sto', $report->sto) // Aktifkan untuk filter per STO
                 ->inRandomOrder()
                 ->take(5)
                 ->pluck('id')
@@ -329,15 +259,11 @@ class MaintenanceController extends Controller
 
         return response()->json([
             'success'  => true,
-            'message'  => 'Status diperbarui. Jika OPEN, teknisi telah diutus otomatis oleh sistem.',
+            'message'  => 'Status diperbarui.',
             'data'     => $report,
             'assigned' => $report->assigned_technicians ?? [],
         ], 200);
     }
-
-    // ====================================================================
-    // TAMBAH FOTO SUSULAN
-    // ====================================================================
 
     public function addPhotos(Request $request, $id)
     {
@@ -366,10 +292,6 @@ class MaintenanceController extends Controller
             ? response()->json(['success' => false, 'message' => 'Tidak ada foto'], 400)
             : response()->json(['success' => true, 'message' => "$uploadedCount foto berhasil ditambahkan!", 'data' => $report->load('images')], 200);
     }
-
-    // ====================================================================
-    // DOWNLOAD FOTO ZIP
-    // ====================================================================
 
     public function downloadPhotosZip($id)
     {
@@ -410,13 +332,12 @@ class MaintenanceController extends Controller
     }
 
     // ====================================================================
-    // EXPORT WORD
+    // EXPORT WORD — dengan tabel evidence (Material, Hasil Ukur, Pendukung)
+    // sama persis ukuran/format seperti tabel Before / Progress / After
     // ====================================================================
-
     public function exportWord($id)
     {
         try {
-            // Ambil data mentah dulu, lalu dekripsi untuk keperluan dokumen Word
             $report = MaintenanceReport::with('images')->findOrFail($id);
             $report = $this->transformDecryptedReport($report);
 
@@ -484,26 +405,45 @@ class MaintenanceController extends Controller
 
             $section->addTextBreak(1, $normalStyle, $paraStyle);
 
+            // ------------------------------------------------------------------
+            // Helper: buat tabel foto 3-kolom (dipakai untuk semua kategori)
+            // ------------------------------------------------------------------
             $colWidth  = 2835;
             $imgWidth  = 140;
             $imgHeight = 157;
 
-            $insertImages = function ($title, $type) use ($section, $report, $boldStyle, $normalStyle, $paraStyle, $centerPara, $colWidth, $imgWidth, $imgHeight) {
+            $insertImages = function ($title, $images) use (
+                $section, $boldStyle, $normalStyle, $paraStyle, $centerPara,
+                $colWidth, $imgWidth, $imgHeight
+            ) {
                 $section->addText($title, $boldStyle, $centerPara);
-                $images     = $report->images->where('type', $type)->values();
+
+                $images = array_values($images); // reindex
+                $totalImages = count($images);
+
                 $cellBorder = [
-                    'borderTopSize' => 6, 'borderBottomSize' => 6, 'borderLeftSize' => 6, 'borderRightSize' => 6,
-                    'borderTopColor' => '000000', 'borderBottomColor' => '000000', 'borderLeftColor' => '000000', 'borderRightColor' => '000000',
+                    'borderTopSize' => 6, 'borderBottomSize' => 6,
+                    'borderLeftSize' => 6, 'borderRightSize' => 6,
+                    'borderTopColor' => '000000', 'borderBottomColor' => '000000',
+                    'borderLeftColor' => '000000', 'borderRightColor' => '000000',
                     'valign' => 'center',
                 ];
-                $tbl = $section->addTable(['borderSize' => 6, 'borderColor' => '000000', 'cellMargin' => 0, 'alignment' => \PhpOffice\PhpWord\SimpleType\JcTable::CENTER]);
+
+                $tbl = $section->addTable([
+                    'borderSize'  => 6,
+                    'borderColor' => '000000',
+                    'cellMargin'  => 0,
+                    'alignment'   => \PhpOffice\PhpWord\SimpleType\JcTable::CENTER,
+                ]);
+
+                // Header row (kosong — sama seperti aslinya)
                 $tbl->addRow(200);
                 $tbl->addCell($colWidth, $cellBorder)->addText('', $normalStyle, $paraStyle);
                 $tbl->addCell($colWidth, $cellBorder)->addText('', $normalStyle, $paraStyle);
                 $tbl->addCell($colWidth, $cellBorder)->addText('', $normalStyle, $paraStyle);
 
-                $totalImages = count($images);
-                $totalCells  = max(3, $totalImages);
+                // Hitung total sel (kelipatan 3, minimal 3)
+                $totalCells = max(3, $totalImages);
                 if ($totalCells % 3 !== 0) {
                     $totalCells += 3 - ($totalCells % 3);
                 }
@@ -514,10 +454,14 @@ class MaintenanceController extends Controller
                     for ($col = 0; $col < 3; $col++) {
                         $cell = $tbl->addCell($colWidth, array_merge($cellBorder, ['valign' => 'center']));
                         if ($imgIndex < $totalImages) {
-                            $img  = $images[$imgIndex];
-                            $path = storage_path('app/public/' . $img->image_path);
+                            $path = $images[$imgIndex];
                             if (file_exists($path)) {
-                                $cell->addImage($path, ['width' => $imgWidth, 'height' => $imgHeight, 'ratio' => false, 'alignment' => \PhpOffice\PhpWord\SimpleType\Jc::CENTER]);
+                                $cell->addImage($path, [
+                                    'width'     => $imgWidth,
+                                    'height'    => $imgHeight,
+                                    'ratio'     => false,
+                                    'alignment' => \PhpOffice\PhpWord\SimpleType\Jc::CENTER,
+                                ]);
                             } else {
                                 $cell->addText("[Tidak Ditemukan]", $normalStyle, $centerPara);
                             }
@@ -527,31 +471,86 @@ class MaintenanceController extends Controller
                         $imgIndex++;
                     }
                 }
+
                 $section->addTextBreak(1, $normalStyle, $paraStyle);
             };
 
-            $insertImages("SEBELUM",  'before');
-            $insertImages("PROGRES",  'progress');
-            $insertImages("SESUDAH",  'after');
+            // ------------------------------------------------------------------
+            // Foto lapangan: SEBELUM / PROGRES / SESUDAH
+            // ------------------------------------------------------------------
+            $makeImagePaths = function ($type) use ($report) {
+                return $report->images
+                    ->where('type', $type)
+                    ->values()
+                    ->map(fn($img) => storage_path('app/public/' . $img->image_path))
+                    ->toArray();
+            };
 
-            $section->addText("MATERIAL", $boldStyle, $paraStyle);
-            if (!empty($report->evidence_material)) {
-                $path = storage_path('app/public/' . $report->evidence_material);
-                if (file_exists($path) && in_array(strtolower(pathinfo($path, PATHINFO_EXTENSION)), ['jpg', 'jpeg', 'png'])) {
-                    $section->addImage($path, ['width' => 220, 'height' => 220, 'ratio' => true]);
-                } else {
-                    $section->addText("Terdapat lampiran file: " . basename($path ?? ''), $normalStyle, $paraStyle);
-                }
-            } else {
-                $section->addText("Tidak ada evidence material.", ['name' => 'Arial', 'size' => 10, 'italic' => true], $paraStyle);
+            $insertImages("SEBELUM",  $makeImagePaths('before'));
+            $insertImages("PROGRES",  $makeImagePaths('progress'));
+            $insertImages("SESUDAH",  $makeImagePaths('after'));
+
+            // ------------------------------------------------------------------
+            // Evidence: MATERIAL TIBA — tabel sama seperti foto lapangan
+            // ------------------------------------------------------------------
+            $materialPath = !empty($report->evidence_material)
+                ? storage_path('app/public/' . $report->evidence_material)
+                : null;
+
+            $materialPaths = [];
+            if ($materialPath && file_exists($materialPath) &&
+                in_array(strtolower(pathinfo($materialPath, PATHINFO_EXTENSION)), ['jpg', 'jpeg', 'png'])) {
+                $materialPaths = [$materialPath];
             }
-            $section->addTextBreak(1, $normalStyle, $paraStyle);
 
+            $insertImages("MATERIAL TIBA", $materialPaths);
+
+            // ------------------------------------------------------------------
+            // Evidence: HASIL UKUR — tabel sama seperti foto lapangan
+            // ------------------------------------------------------------------
+            $ukurPath = !empty($report->evidence_ukur)
+                ? storage_path('app/public/' . $report->evidence_ukur)
+                : null;
+
+            $ukurPaths = [];
+            if ($ukurPath && file_exists($ukurPath) &&
+                in_array(strtolower(pathinfo($ukurPath, PATHINFO_EXTENSION)), ['jpg', 'jpeg', 'png'])) {
+                $ukurPaths = [$ukurPath];
+            }
+
+            $insertImages("HASIL UKUR", $ukurPaths);
+
+            // ------------------------------------------------------------------
+            // Evidence: PENDUKUNG / BA — tabel sama seperti foto lapangan
+            // ------------------------------------------------------------------
+            $pendukungPath = !empty($report->evidence_pendukung)
+                ? storage_path('app/public/' . $report->evidence_pendukung)
+                : null;
+
+            $pendukungPaths = [];
+            if ($pendukungPath && file_exists($pendukungPath) &&
+                in_array(strtolower(pathinfo($pendukungPath, PATHINFO_EXTENSION)), ['jpg', 'jpeg', 'png'])) {
+                $pendukungPaths = [$pendukungPath];
+            }
+
+            $insertImages("PENDUKUNG / BA", $pendukungPaths);
+
+            // ------------------------------------------------------------------
+            // KML (koordinat)
+            // ------------------------------------------------------------------
             $section->addText("KML", $boldStyle, $paraStyle);
             $section->addText(($report->latitude ?? "-") . ", " . ($report->longitude ?? "-"), $normalStyle, $paraStyle);
             $section->addTextBreak(2, $normalStyle, $paraStyle);
 
-            $phpWord->addTableStyle('TTDTable', ['cellMarginTop' => 0, 'cellMarginBottom' => 0, 'cellMarginLeft' => 100, 'cellMarginRight' => 100]);
+            // ------------------------------------------------------------------
+            // Tanda Tangan
+            // ------------------------------------------------------------------
+            $phpWord->addTableStyle('TTDTable', [
+                'cellMarginTop'    => 0,
+                'cellMarginBottom' => 0,
+                'cellMarginLeft'   => 100,
+                'cellMarginRight'  => 100,
+            ]);
             $tableTTD = $section->addTable('TTDTable');
             $tableTTD->addRow();
 
@@ -581,10 +580,6 @@ class MaintenanceController extends Controller
             return response()->json(['message' => 'Gagal membuat file Word: ' . $e->getMessage()], 500);
         }
     }
-
-    // ====================================================================
-    // HELPER NOTIFIKASI ONESIGNAL
-    // ====================================================================
 
     private function sendNotification(string $teknisi, string $sto): void
     {
